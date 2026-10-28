@@ -133,6 +133,8 @@ def triage(screens, scene_paths, blind_spot_scan=True):
             try:
                 scene, _ = T._HELPERS["load_scene"](path, T._HELPERS["Scene"])
                 a, b = scene.index(s["first_id"]), scene.index(s["second_id"])
+            except sys.modules["scenes"].NeedsTorch as exc:
+                sys.exit(str(exc))
             except Exception as exc:
                 print("blind-spot scan skips %s: %s" % (name, exc), file=sys.stderr)
                 continue

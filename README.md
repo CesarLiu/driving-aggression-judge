@@ -55,9 +55,11 @@ California rules were checked against.
 
 ## Dependencies
 
-The code does not depend on the CAT repository or on PyTorch. The few modules of the CAT fork's
+The code does not depend on the CAT repository, and on PyTorch only to read catk's files. The few modules of the CAT fork's
 `responsibility` package that the screens need are copied into the skill's `scripts/responsibility/`
-(source commit and changes are in its `__init__.py`; CAT's MIT licence is in `LICENSE-CAT`). The
+(source commit and changes are in its `__init__.py`; CAT's MIT licence is in `LICENSE-CAT`).
+ScenarioNet scenes need only NumPy. catk's `womd_cache` files are pickled PyTorch tensors, so
+reading that format needs `torch` installed; without it the screens stop with a message. The
 Claude backend needs `claude-agent-sdk`, which bundles Claude Code and uses a Claude Code login or
 `ANTHROPIC_API_KEY`. The local backend needs only the standard library and a server with the
 OpenAI chat API and function calling.

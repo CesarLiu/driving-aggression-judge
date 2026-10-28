@@ -1,3 +1,4 @@
 claude-agent-sdk~=0.2.174
 numpy
 matplotlib
+# torch  # only to read catk's womd_cache (pickled PyTorch tensors); ScenarioNet scenes do not need it

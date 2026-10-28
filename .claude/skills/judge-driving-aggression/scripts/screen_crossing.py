@@ -27,7 +27,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import jurisdiction  # noqa: E402
-from scenes import PAIR_MODES, load_scene, pick_pair  # noqa: E402
+from scenes import PAIR_MODES, NeedsTorch, load_scene, pick_pair  # noqa: E402
 from responsibility import lanes as lanes_mod  # noqa: E402
 from responsibility import right_of_way as R  # noqa: E402
 from responsibility.scene import Scene  # noqa: E402
@@ -241,6 +241,8 @@ def main():
                     continue
                 a, o, how = pair
             row = screen_pair(R, lanes_mod, scene, a, o, profile, tie_steps, args.hard_brake, args.close_pet)
+        except NeedsTorch as exc:  # the whole folder is in that format: stop with one clear message
+            sys.exit(str(exc))
         except Exception as exc:  # one bad scene must not stop a batch
             print("skip %s: %s: %s" % (path.name, type(exc).__name__, exc), file=sys.stderr)
             skipped += 1

@@ -34,7 +34,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from scenes import PAIR_MODES, load_scene, pick_pair  # noqa: E402
+from scenes import PAIR_MODES, NeedsTorch, load_scene, pick_pair  # noqa: E402
 from screen_crossing import scene_files, smooth, sustained_decel  # noqa: E402
 from responsibility import lanes, rss  # noqa: E402
 from responsibility.scene import Scene  # noqa: E402
@@ -394,6 +394,8 @@ def main():
                 row["%s_reason" % role] = reason(me, other, res)
                 row["%s_notes" % role] = ";".join(notes)
             rows.append(row)
+        except NeedsTorch as exc:  # the whole folder is in that format: stop with one clear message
+            sys.exit(str(exc))
         except Exception as exc:  # one bad scene must not stop a batch
             print("skip %s: %s: %s" % (path.name, type(exc).__name__, exc), file=sys.stderr)
 

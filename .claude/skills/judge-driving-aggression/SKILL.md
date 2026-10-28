@@ -24,7 +24,8 @@ vehicle something; and labels made by people who do not know the traffic rules c
      SMART's tokens, so lane links are inferred from geometry, stop signs sit at the start of their
      lanes, and lights are known only at 1.0 s. Say so when a verdict rests on a light.
    They need only NumPy: the scene, lane-graph and right-of-way code they use is copied into
-   `scripts/responsibility/` from the CAT fork's `responsibility` package. A raw WOMD tfrecord must
+   `scripts/responsibility/` from the CAT fork's `responsibility` package. catk's cache files are
+   pickled PyTorch tensors, so that format alone also needs `torch` installed. A raw WOMD tfrecord must
    be converted to ScenarioNet scenes first (ScenarioNet's Waymo converter, or the CAT fork's
    `scripts/responsibility/convert_womd_split.py`).
    The pair judged (`--pairs auto`, column `pair`): the SDC and its object-of-interest partner;

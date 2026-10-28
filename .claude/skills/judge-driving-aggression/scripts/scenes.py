@@ -14,6 +14,8 @@
     another ends, running within 45 degrees of it; left/right neighbours where a lane runs within
     20 degrees of another 2.5 to 5 m to its side.
   - stop signs: a lane of type 2 gets a stop sign at its first point.
+  - the cache holds PyTorch tensors, so reading it needs ``torch`` installed (ScenarioNet scenes
+    do not); without it ``load_scene`` raises ``NeedsTorch``.
   - traffic lights: catk stores only the state at the current step (1.0 s). It is held for the
     whole clip, so a light that changes later is not seen; screen verdicts that rest on a
     signal are less certain in this format.
@@ -141,11 +143,21 @@ def catk_to_description(raw, scenario_id=None):
                          "source": "catk_cache"}}
 
 
+class NeedsTorch(RuntimeError):
+    """A scene file holds PyTorch tensors (catk's cache) and torch is not installed."""
+
+
 def load_scene(path, Scene):
     """A Scene from either format; ``Scene`` is responsibility.scene.Scene (passed in so this module
     does not import the scene code)."""
-    with open(path, "rb") as f:
-        raw = pickle.load(f)
+    try:
+        with open(path, "rb") as f:
+            raw = pickle.load(f)
+    except ImportError as exc:  # ModuleNotFoundError included
+        if "torch" not in str(exc):
+            raise
+        raise NeedsTorch("%s holds PyTorch tensors (catk's womd_cache): reading it needs torch "
+                         "(pip install torch); ScenarioNet scenes do not" % Path(path).name) from exc
     if is_catk(raw):
         return Scene.from_description(catk_to_description(raw, Path(path).stem)), "catk_cache"
     return Scene.from_description(raw), "scenarionet"
