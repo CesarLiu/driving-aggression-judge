@@ -53,6 +53,19 @@ aggressive in these scenes". `aggression_agent/README.md` describes the triage, 
 outputs and what was measured. `references/validation-us-california.md` describes what the
 California rules were checked against.
 
+## With a model you serve yourself (vLLM, Ollama)
+
+There are three ways. Details and caveats are in `aggression_agent/README.md`, "Local models".
+
+| | How | Server needs | Suits |
+|---|---|---|---|
+| 1. The skill in Claude Code | Start Claude Code with the local model (`ANTHROPIC_BASE_URL`), open this repository, and ask about a scene | What Claude Code already uses | A few scenes, interactively |
+| 2. Pipeline, Claude backend | Same environment as Claude Code; `python main.py run ... --reviewer-model <name> --critic-model <name>` | An Anthropic-compatible endpoint; images in tool results for the figures | A dataset, without changing the server |
+| 3. Pipeline, OpenAI backend | `python main.py run ... --backend openai --base-url http://<host>:<port>/v1 --reviewer-model <name>` | vLLM started with `--enable-auto-tool-choice --tool-call-parser ...`, or Ollama | A dataset; handles `<think>`, malformed arguments, text-only models (`--no-images`) |
+
+None of the three has been run with a real local model yet. Way 3 was tested against a scripted
+mock server. Check a new model on scenes already reviewed before trusting its labels.
+
 ## Dependencies
 
 The code does not depend on the CAT repository, and on PyTorch only to read catk's files. The few modules of the CAT fork's

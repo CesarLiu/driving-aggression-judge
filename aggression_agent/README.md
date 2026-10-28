@@ -58,8 +58,53 @@ run; the critic gets 1.5x) and `--profile` (jurisdiction).
 
 ## Local models (vLLM, Ollama)
 
+A model you serve yourself can do the judging in three ways. The first two reuse a setup that
+already works in Claude Code: `ANTHROPIC_BASE_URL` pointing at the server, plus
+`ANTHROPIC_AUTH_TOKEN` or `ANTHROPIC_API_KEY` if it wants one. The third uses the server's
+OpenAI-compatible API. To find the served model name:
+
 ```bash
-# vLLM: serve a vision-language model with tool calling (parser to match the model family)
+curl http://<host>:<port>/v1/models
+```
+
+Whichever way you choose, first run the model on scenes already reviewed: 237, 250, 293 and 342,
+and the full CAT run's `runs/cat500/labels.csv` from the Claude backend. Compare the verdicts before
+trusting its labels. None of the three has been run with a real local model yet.
+
+### 1. The skill in Claude Code, one scene at a time
+
+Start Claude Code with the local model and open this repository. The skill in
+`.claude/skills/judge-driving-aggression/` loads by itself; ask, for example, "use
+judge-driving-aggression to judge whether the SDC in scene 237 of /data/cat/raw_scenes_500 is
+aggressive". The model follows `SKILL.md`: it runs the screens, reads the tracks and writes the
+labels.
+
+Nothing in this folder is involved. This suits a few scenes, and its quality is the model's own
+skill at following `SKILL.md` with Claude Code's tools.
+
+### 2. This pipeline with the Claude backend, pointed at the server
+
+The Claude Agent SDK runs Claude Code and inherits the shell's environment, so the same variables
+send the agents to your server. Name the served model for both agents: the critic's default is a
+Claude model.
+
+```bash
+# in a shell where ANTHROPIC_BASE_URL (and the token, if any) point at the server, as for Claude Code
+python main.py run --scenes /data/cat/raw_scenes_500 --out runs/vllm_check --only 237,250,293,342 \
+  --reviewer-model <served-model-name> --critic-model <served-model-name> --concurrency 1
+```
+
+The verdicts come back through Claude Code's structured-output tool, and the figure through an
+image block in a tool result. The model must call that tool reliably. For the figure to reach it,
+the model must accept images and the server's Anthropic-compatible endpoint must pass images inside
+`tool_result`. A review that failed shows `subtype` other than `success` and no `final` in
+`reviews/<scene>.json`; then use way 3. The cost in the report is priced as Claude and means
+nothing here. `--no-images` does not apply to this backend.
+
+### 3. This pipeline with the OpenAI-compatible backend
+
+```bash
+# vLLM: serve with tool calling enabled (the parser must match the model family)
 vllm serve Qwen/Qwen2.5-VL-72B-Instruct --enable-auto-tool-choice --tool-call-parser hermes --max-model-len 32768
 python main.py run --scenes /data/cat/raw_scenes_500 --out runs/cat500_qwen --backend openai \
   --base-url http://localhost:8000/v1 --reviewer-model Qwen/Qwen2.5-VL-72B-Instruct
@@ -71,8 +116,10 @@ python main.py run ... --backend openai --no-images ...   # a text-only model: n
 python main.py propose --run runs/cat500_qwen --backend openai --base-url ... --model <name>
 ```
 
-`local_agents.py` runs the same agents, prompts, scene tools and records (`spec.py`) through the
-chat-completions API with function calling.
+A vLLM server started without `--enable-auto-tool-choice --tool-call-parser ...` cannot do function
+calling and has to be restarted with them. `local_agents.py` runs the same agents, prompts, scene
+tools and records (`spec.py`) through the chat-completions API with function calling. It is written
+for local models' habits:
 
 - **Verdict.** It is handed in through a `submit_verdict` function whose parameters are the verdict
   schema. An invalid verdict is sent back with its errors. A verdict written as plain JSON is also
