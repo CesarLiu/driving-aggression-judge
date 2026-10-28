@@ -1,0 +1,12 @@
+# run outputs and local secrets
+runs/
+.env
+
+# data (never commit scenes)
+*.pkl
+*.tfrecord*
+
+# python
+__pycache__/
+*.pyc
+.venv/
