@@ -21,7 +21,8 @@ catk's cached WOMD (`womd_cache/<split>`). No data is included.
   scripts/screen_same_direction.py         cut-in / tailgating / close-pass screen
   scripts/scenes.py                        loads both scene formats, picks the pair to judge
   scripts/jurisdiction.py                  profile engine (self-test: python scripts/jurisdiction.py)
-  scripts/responsibility/                  scene, lane-graph and right-of-way code from the CAT fork
+  scripts/judge.py                         duty x cost x attribution judge: calibrate, run, self-test
+  scripts/responsibility/                  scene, lane-graph, right-of-way and judge code from the CAT fork
   jurisdictions/                           us-california (validated by review), drafts for others
   references/                              rubric, profile schema, what was validated and its limits
   assets/, evals/                          a person's labels on CAT's 500 scenes; skill trigger evals
@@ -40,6 +41,10 @@ pip install -r aggression_agent/requirements.txt        # numpy, matplotlib, cla
 # the screens alone (NumPy only)
 python .claude/skills/judge-driving-aggression/scripts/screen_crossing.py --scenes /data/cat/raw_scenes_500 --profile us-california --out screen_crossing.csv
 python .claude/skills/judge-driving-aggression/scripts/screen_same_direction.py --scenes /data/cat/raw_scenes_500 --out screen_same_direction.csv
+
+# the duty x cost x attribution judge (NumPy only): calibrate on the dataset, then judge
+python .claude/skills/judge-driving-aggression/scripts/judge.py calibrate --scenes /data/cat/raw_scenes_500 --out cal --workers 4
+python .claude/skills/judge-driving-aggression/scripts/judge.py run --scenes /data/cat/raw_scenes_500 --calibration cal/calibration.json --out judge.csv
 
 # screens + reviewing agents over a dataset
 cd aggression_agent
@@ -69,7 +74,7 @@ mock server. Check a new model on scenes already reviewed before trusting its la
 ## Dependencies
 
 The code does not depend on the CAT repository, and on PyTorch only to read catk's files. The few modules of the CAT fork's
-`responsibility` package that the screens need are copied into the skill's `scripts/responsibility/`
+`responsibility` package that the screens and the judge need are copied into the skill's `scripts/responsibility/`
 (source commit and changes are in its `__init__.py`; CAT's MIT licence is in `LICENSE-CAT`).
 ScenarioNet scenes need only NumPy. catk's `womd_cache` files are pickled PyTorch tensors, so
 reading that format needs `torch` installed; without it the screens stop with a message. The

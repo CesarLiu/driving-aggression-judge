@@ -117,15 +117,24 @@ vehicle something; and labels made by people who do not know the traffic rules c
 
 ## Files
 
+- `scripts/judge.py`: a second opinion, the duty x cost x attribution judge (`references/judge.md`).
+  Use it when the user wants a verdict with a measured cost, or a check on a screen's candidate.
+  - It reads who moved from the local road direction, so it sees lane-branch joins.
+  - Thresholds are the 0.9 quantile of logged driving: run `judge.py calibrate` on the dataset
+    first, then `judge.py run`.
+  - It abstains where the cause of a conflict cannot be read.
+  - Crossings: `us-california` or `left-hand-draft` only. Use the screens for other jurisdictions.
 - `scripts/screen_crossing.py` and `scripts/screen_same_direction.py`: the two screens.
   `scripts/scenes.py`: scene loading (ScenarioNet and catk cache) and pair choice.
   `scripts/jurisdiction.py`: the profile engine (`python scripts/jurisdiction.py` self-tests it).
-  `scripts/responsibility/`: the scene, lane-graph and right-of-way code from the CAT fork (see its
-  `__init__.py` for the source commit and the two changes).
+  `scripts/responsibility/`: code from the CAT fork. It holds the scene, lane-graph and
+  right-of-way code, and the judge's attribution, cost and decision modules. Its `__init__.py`
+  gives the source commits and the two changes.
 - `jurisdictions/*.json`: the profiles. `references/jurisdictions.md`: schema, rule catalogue, how
   to add a country.
 - `references/rubric.md`: the definition, the physical rules for same-direction traffic, failure
   modes. `references/validation-us-california.md`: what was checked and its limits.
+  `references/judge.md`: the judge's method, how it differs from the screens, what it measured.
 - `assets/human_sdc_aggressive_cat500.csv`: a person's SDC labels on CAT's 500 scenes with an
   earlier decision for each. Not ground truth: on review only the cut-in (342/482) holds up.
 - For a whole dataset, `aggression_agent/` at the repository root runs this workflow

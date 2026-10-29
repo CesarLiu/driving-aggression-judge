@@ -100,6 +100,16 @@ decided by the first rule that applies:
                         these two rules name went first in 40% (of 15) and
                         25% (of 8) of the pairs, no better than chance
 
+``traffic_side="left"`` is the same table for left-hand traffic, its mirror
+image: the turn across oncoming traffic is the right turn (case right-turn),
+the vehicle to yield to is the one on the left (yield-left), and a sign the
+map gives no lanes for stands at the left kerb. Japan's Road Traffic Act
+reads so (Art. 36(1): yield to the vehicle from the left at an uncontrolled
+crossing; Art. 37: a right turner yields to oncoming traffic; as recalled,
+not checked against the text). A scene mirrored left to right
+(scripts/responsibility/mirror_scenes.py) and judged with it must get the
+holders of the original under the right-hand table.
+
 "Entered" is the step the agent crossed the stop line into the
 intersection (the first controlled lane), or else began its run on the
 lane P* lies on (for a merge, the lane the two share after it).
@@ -213,6 +223,7 @@ class RightOfWayParams:
     uncontrolled_order: bool = False  # first-in and yield-right where the map shows no control (21800(a), (b))
     same_direction_rules: bool = False  # lane-change and merge priorities, and duties, between same-direction paths
     order_unknown_tie: bool = False  # an all-way stop both were already waiting at: treat as simultaneous (21801, 21800(b))
+    traffic_side: str = "right"  # "left": the mirrored table for left-hand traffic (module docstring)
 
 
 @dataclass
@@ -483,12 +494,13 @@ def _approach(scene: Scene, agent: int, path: _Path, s_star: float, p: RightOfWa
     elif line is not None:
         control = STOP
     else:
-        for sign in loose_signs:  # a sign the map gives no lanes for: at the right kerb of the approach
+        for sign in loose_signs:  # a sign the map gives no lanes for: at the kerb of the approach (right, or left)
             s_sign, dist = path.project(sign, real=True)
             i = path.step_index(s_sign)
             h = path.headings[i]
             right = np.cos(h) * (sign[1] - path.points[i, 1]) - np.sin(h) * (sign[0] - path.points[i, 0]) < 0
-            if dist <= SIGN_OFFSET and right and s_star - p.control_reach <= s_sign <= s_star:
+            kerb = right != (p.traffic_side == "left")
+            if dist <= SIGN_OFFSET and kerb and s_star - p.control_reach <= s_sign <= s_star:
                 control = STOP
         if control is None:
             near = [np.asarray(light["stop_point"], float)[:2] for light in lights.values() if "stop_point" in light]
@@ -557,7 +569,10 @@ def _rules(a: Approach, b: Approach, merge: bool, p: RightOfWayParams) -> Tuple[
         return holder, "merge" if holder is not None else "same-direction"
     if a.on_lane != b.on_lane:  # entering the road from a driveway or a car park (21804(a))
         return ("a" if a.on_lane else "b"), "driveway"
-    a_left, b_left = a.turn in ("left", "u-turn"), b.turn in ("left", "u-turn")
+    lhs = p.traffic_side == "left"
+    across = "right" if lhs else "left"  # the turn across oncoming traffic
+    turn_case, side_case = across + "-turn", "yield-left" if lhs else "yield-right"
+    a_across, b_across = a.turn in (across, "u-turn"), b.turn in (across, "u-turn")
     oncoming = abs(rel) > ONCOMING
     if oncoming and a.turn == b.turn == "straight":  # passing each other: no conflict of priority
         return None, "oncoming"
@@ -567,13 +582,15 @@ def _rules(a: Approach, b: Approach, merge: bool, p: RightOfWayParams) -> Tuple[
         return "b", "red-light"
     if b.control == RED and a.control in PERMISSIVE:
         return "a", "red-light"
-    left_turn = ("b" if a_left else "a") if oncoming and a_left != b_left else None
-    right = "b" if SAME_DIRECTION < rel < ONCOMING else "a" if -ONCOMING < rel < -SAME_DIRECTION else None
+    turner = ("b" if a_across else "a") if oncoming and a_across != b_across else None
+    side = "b" if SAME_DIRECTION < rel < ONCOMING else "a" if -ONCOMING < rel < -SAME_DIRECTION else None
+    if lhs:  # yield to the vehicle on the left
+        side = {"a": "b", "b": "a", None: None}[side]
 
     if a.control in PERMISSIVE and b.control in PERMISSIVE:
         if (a.control == ARROW) != (b.control == ARROW):
             return ("a" if a.control == ARROW else "b"), "protected-arrow"
-        for holder, case in ((left_turn, "left-turn"), (first(a.entered, b.entered), "first-in")):
+        for holder, case in ((turner, turn_case), (first(a.entered, b.entered), "first-in")):
             if holder is not None:
                 return holder, case
         return None, "simultaneous"
@@ -582,8 +599,8 @@ def _rules(a: Approach, b: Approach, merge: bool, p: RightOfWayParams) -> Tuple[
     stop_a, stop_b = a.control in (STOP, RED), b.control in (STOP, RED)
     if stop_a != stop_b:
         return ("b" if stop_a else "a"), "stop-sign"
-    if stop_a:  # all-way stop: the first to arrive goes first; on a tie left turns yield, then yield to the right
-        rules = ((left_turn, "left-turn"), (right, "yield-right"))
+    if stop_a:  # all-way stop: the first to arrive goes first; on a tie the turner across yields, then the one from the right (left)
+        rules = ((turner, turn_case), (side, side_case))
         if a.arrived == b.arrived == -1:  # both were waiting when the clip began
             if not p.order_unknown_tie:
                 return None, "all-way-stop/order-unknown"
@@ -595,10 +612,10 @@ def _rules(a: Approach, b: Approach, merge: bool, p: RightOfWayParams) -> Tuple[
         return next(((h, "all-way-stop/" + c) for h, c in rules if h is not None), (None, "all-way-stop/simultaneous"))
     if {a.through, b.through} == {True, False}:  # a T junction: the ending road yields (21800(c))
         return ("a" if a.through else "b"), "through-road"
-    if left_turn is not None:
-        return left_turn, "left-turn"
+    if turner is not None:
+        return turner, turn_case
     if p.uncontrolled_order:
-        for holder, case in ((first(a.entered, b.entered), "first-in"), (right, "yield-right")):
+        for holder, case in ((first(a.entered, b.entered), "first-in"), (side, side_case)):
             if holder is not None:
                 return holder, case
     return None, "uncontrolled"
