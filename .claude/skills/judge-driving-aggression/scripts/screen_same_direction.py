@@ -20,7 +20,7 @@ of way is involved here, so the criteria are physical (references/rubric.md, fam
 Positions are measured along and across the map lane Y is in at that moment (its own track where no
 lane matches), so curved roads work and Y's later lane changes do not leak in; who moved sideways is
 measured against the nearest map lane. Scene files: ScenarioNet pickles or catk's cached WOMD (scenes.py). The output is candidates with the
-numbers behind them; the reviewer still looks at each (SKILL.md, step 4).
+numbers behind them; the reviewer still looks at each (SKILL.md, step 5).
 
     python screen_same_direction.py --scenes raw_scenes_500 --out same_direction.csv
 """

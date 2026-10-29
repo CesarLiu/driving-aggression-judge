@@ -75,7 +75,35 @@ vehicle something; and labels made by people who do not know the traffic rules c
    lane the other car is in at that moment; who moved, by each car's change of offset from its own
    lane.
 
-4. **Review every candidate and every scene the screen cannot see.** Open the tracks
+4. **Optionally, get a second opinion from the judge** (`references/judge.md`). Use it when the
+   user wants a verdict with a measured cost, when a dataset is too large to review every scene,
+   or to check the screens' blind spots. Calibrate on the dataset being judged, or on a larger one
+   from the same place, because thresholds are not portable. Then judge:
+
+   ```bash
+   python scripts/judge.py calibrate --scenes <folder> --out cal --profile us-california --workers 4
+   python scripts/judge.py run --scenes <folder> --calibration cal/calibration.json --out judge.csv
+   ```
+
+   - **What it needs.** The `--profile` must be `us-california` or `left-hand-draft`; for other
+     jurisdictions skip this step. `calibrate` prints `n` and the threshold of each kind. A kind
+     with a few dozen references or fewer (crossings usually) has a weak threshold, so say so when
+     a verdict rests on it.
+   - **What it writes.** One row per scene and direction (`first` toward `second`, the same pair
+     as the screens):
+     - `verdict`: `aggressive`, `not aggressive` or `abstain`;
+     - `kind`: `crossing`, `cut-in`, `tailgate` or `none`;
+     - `reason`;
+     - per kind, `*_demand` (m/s², the braking asked of the other) and `*_quantile` (its place
+       among logged drivers);
+     - `crossing_case` and `crossing_actor` (right_of_way.py's rule and who entered first);
+     - `cut-in_headway_at_join`, `cut-in_speed_difference` and `tailgate_headway`.
+   - **How it differs from the screens.** Its thresholds are relative: the 0.9 quantile of logged
+     driving, not the rubric's absolute headways. It therefore flags fewer cut-ins than the screen,
+     and a cut-in it passes may still break the rubric. It reads who moved from the local road
+     direction, so it sees joins along a lane branch that the same-direction screen misses.
+
+5. **Review every candidate and every scene the screen cannot see.** Open the tracks
    (`responsibility.scene.Scene.load(path)`: `position`, `velocity`, `heading`, `valid`, 10 Hz,
    91 steps; `sdc`, `objects_of_interest`) and check against `references/rubric.md`:
    - who arrived at the stop line first and whether the vehicle that went first really had to
@@ -87,8 +115,16 @@ vehicle something; and labels made by people who do not know the traffic rules c
      follows a lane link while moving across the road): look at scenes where two cars end up in one
      lane, and at `borderline_cut_in_thw_*` notes. It also does not see close passes between
      opposite-direction or turning cars; those belong to the crossing review.
+   - if you ran the judge, every scene where it and the screens disagree:
+     - a judge `cut-in` with `lane_join_*_not_by_this_agent` or no screen row is usually a lane-branch
+       join; check who moved across the road;
+     - a screen candidate the judge passes is usually a cut-in that breaks the rubric but is
+       ordinary for this dataset; decide by the rubric, and give the quantile;
+     - an `abstain` is a conflict whose cause the judge could not read; judge it from the tracks.
 
-5. **Write the labels.** One row per scene: `scene, sdc_aggressive, sdc_reason, ooi_aggressive,
+   The judge is a second opinion, not ground truth. Where you overrule it, say why.
+
+6. **Write the labels.** One row per scene: `scene, sdc_aggressive, sdc_reason, ooi_aggressive,
    ooi_reason, confidence`. Each reason is one English sentence with the deciding rule and
    numbers ("SDC left-turned across the oncoming OOI at 3.6 s while both had been waiting since
    before the clip; CVC 21801(a) gives the OOI priority"). Name the jurisdiction. Merge duplicate
@@ -117,13 +153,8 @@ vehicle something; and labels made by people who do not know the traffic rules c
 
 ## Files
 
-- `scripts/judge.py`: a second opinion, the duty x cost x attribution judge (`references/judge.md`).
-  Use it when the user wants a verdict with a measured cost, or a check on a screen's candidate.
-  - It reads who moved from the local road direction, so it sees lane-branch joins.
-  - Thresholds are the 0.9 quantile of logged driving: run `judge.py calibrate` on the dataset
-    first, then `judge.py run`.
-  - It abstains where the cause of a conflict cannot be read.
-  - Crossings: `us-california` or `left-hand-draft` only. Use the screens for other jurisdictions.
+- `scripts/judge.py`: the duty x cost x attribution judge of step 4 (`python scripts/judge.py
+  self-test` checks it).
 - `scripts/screen_crossing.py` and `scripts/screen_same_direction.py`: the two screens.
   `scripts/scenes.py`: scene loading (ScenarioNet and catk cache) and pair choice.
   `scripts/jurisdiction.py`: the profile engine (`python scripts/jurisdiction.py` self-tests it).
