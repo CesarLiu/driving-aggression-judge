@@ -45,6 +45,8 @@ def main():
     r.add_argument("--out", required=True, help="run folder; an existing one is resumed")
     r.add_argument("--profile", default="us-california", help="jurisdiction profile of the skill")
     r.add_argument("--pairs", default="auto", choices=("auto", "ooi", "sdc-nearest"))
+    r.add_argument("--infer-lights", action="store_true",
+                   help="crossing screen fills in unknown light states (skill's scripts/lights.py)")
     r.add_argument("--only", help="comma-separated scene names (file stems) to label")
     r.add_argument("--crossing-csv", help="reuse this crossing screen output instead of screening again")
     r.add_argument("--same-direction-csv", help="reuse this same-direction screen output")
@@ -55,8 +57,8 @@ def main():
     r.add_argument("--concurrency", type=int, default=3, help="scenes reviewed at once")
     r.add_argument("--critic", default="disagree", choices=("disagree", "all", "none"),
                    help="when the critic looks again: when the reviewer overruled the screens or was unsure (default)")
-    r.add_argument("--reviewer-model", help="default claude-sonnet-5-5 (claude backend); required with openai")
-    r.add_argument("--critic-model", help="default claude-opus-5-5 (claude backend); default the reviewer model with openai")
+    r.add_argument("--reviewer-model", help="default claude-haiku-5-5 (claude backend); required with openai")
+    r.add_argument("--critic-model", help="default claude-sonnet-5-5 (claude backend); default the reviewer model with openai")
     r.add_argument("--budget", type=float, default=1.0, help="USD cap per reviewer run (critic: 1.5x; claude backend only)")
     add_backend(r)
     r.add_argument("--max-turns", type=int, default=24)
@@ -74,8 +76,8 @@ def main():
     claude = args.backend == "claude"
     if args.cmd == "run":
         if claude:
-            args.reviewer_model = args.reviewer_model or "claude-sonnet-5-5"
-            args.critic_model = args.critic_model or "claude-opus-5-5"
+            args.reviewer_model = args.reviewer_model or "claude-haiku-5-5"
+            args.critic_model = args.critic_model or "claude-sonnet-5-5"
         elif not args.reviewer_model:
             ap.error("--backend openai needs --reviewer-model (the model name the server serves)")
         else:

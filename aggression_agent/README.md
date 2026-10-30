@@ -53,7 +53,7 @@ python main.py propose --run runs/cat500    # rule proposals from the run's disa
 
 Runs resume: screen CSVs and finished reviews in the run folder are reused. Useful options include
 `--concurrency` (default 3), `--critic disagree|all|none`, `--reviewer-model` (default
-`claude-sonnet-5-5`), `--critic-model` (default `claude-opus-5-5`), `--budget` (USD cap per reviewer
+`claude-haiku-5-5`), `--critic-model` (default `claude-sonnet-5-5`), `--budget` (USD cap per reviewer
 run; the critic gets 1.5x) and `--profile` (jurisdiction).
 
 ## Local models (vLLM, Ollama)
@@ -201,11 +201,27 @@ and the `ooi_*` columns its second, as in the screens. The columns are: aggressi
 confidence; `source` (screen, reviewer, critic or not_reviewed); `screen_sdc` and `screen_ooi` (what
 the screens said); and `triage`.
 
+The crossing screen's right-of-way facts follow, copied unchanged, so that a violation which cost
+the other nothing is still visible:
+- `row_case`: the rule that decided;
+- `row_holder`: who had priority (`sdc`, `ooi` or `none`);
+- `row_went_first` and `row_pet_s`: who reached the conflict point first, and how many seconds
+  apart;
+- `row_affected`: whether the other vehicle paid for a violation;
+- `sdc_row_violation` and `ooi_row_violation`;
+- `sdc_red_entry` and `ooi_red_entry`: how each vehicle entered on red under the profile, for
+  example `lawful_turn_on_red`, `ran_red` or `turn_on_red_needs_sign`. These two are empty when
+  the vehicle did not enter on red, or when the crossing CSV predates them.
+
 `disagreements.csv` lists the reviewed scenes whose final verdict differs from the screens.
 `report.md` summarises them. `reviews/<scene>.json` holds every agent's verdict, tool calls, turns
 and cost.
 
 ## Measured so far (2026-10-28)
+
+These runs used the earlier defaults: `claude-sonnet-5-5` as reviewer and `claude-opus-5-5` as
+critic. Since 2026-10-30 the defaults are `claude-haiku-5-5` and `claude-sonnet-5-5`; their
+verdicts and costs have not been measured yet.
 
 The smoke test used CAT scenes 23, 237, 250, 293 and 342, plus catk 48824446f21b3eb0 and
 975a3faf7536fc35.

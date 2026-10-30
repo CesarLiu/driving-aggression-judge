@@ -52,7 +52,8 @@ def screen(args, run):
     scripts = Path(args.skill_dir) / "scripts"
     out = {}
     for name, script, given, extra in (
-            ("crossing", "screen_crossing.py", args.crossing_csv, ["--profile", args.profile]),
+            ("crossing", "screen_crossing.py", args.crossing_csv,
+             ["--profile", args.profile] + (["--infer-lights"] if getattr(args, "infer_lights", False) else [])),
             ("same_direction", "screen_same_direction.py", args.same_direction_csv, [])):
         path = Path(given) if given else run / ("screen_%s.csv" % name)
         if not path.exists():
@@ -202,7 +203,15 @@ async def review_all(names, screens, args, run, rules, agents):
 COLUMNS = ["scene", "scenario_id", "format", "pair", "first_id", "second_id", "jurisdiction",
            "sdc_aggressive", "sdc_kind", "sdc_reason", "sdc_confidence",
            "ooi_aggressive", "ooi_kind", "ooi_reason", "ooi_confidence",
-           "source", "screen_sdc", "screen_ooi", "triage"]
+           "source", "screen_sdc", "screen_ooi", "triage",
+           "row_case", "row_holder", "row_went_first", "row_pet_s", "row_affected",
+           "sdc_row_violation", "ooi_row_violation", "sdc_red_entry", "ooi_red_entry"]
+# the crossing screen's right-of-way facts, copied as they are: the rule that decided (case), who held
+# priority (sdc / ooi / none), who reached the conflict first, the gap between them, whether the
+# other paid for a violation, and how each entered on red (empty when it did not)
+ROW_FACTS = {"row_case": "case", "row_holder": "holder", "row_went_first": "went_first", "row_pet_s": "pet_s",
+             "row_affected": "affected", "sdc_row_violation": "sdc_violation", "ooi_row_violation": "ooi_violation",
+             "sdc_red_entry": "sdc_red_entry", "ooi_red_entry": "ooi_red_entry"}
 
 
 def write_outputs(run, screens, scene_paths, picked, reviews, profile):
@@ -216,6 +225,7 @@ def write_outputs(run, screens, scene_paths, picked, reviews, profile):
         row = {k: base.get(k, "") for k in ("scene", "scenario_id", "format", "pair", "first_id", "second_id")}
         row.update(jurisdiction=profile["id"], screen_sdc=screen_finding(c, s, "sdc"),
                    screen_ooi=screen_finding(c, s, "ooi"), triage=" | ".join(picked.get(name, [])))
+        row.update({col: (c or {}).get(key, "") for col, key in ROW_FACTS.items()})
         rec = reviews.get(name)
         if rec and rec.get("final"):
             v = rec["final"]
