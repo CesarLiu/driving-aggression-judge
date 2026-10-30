@@ -1,7 +1,8 @@
 """Jurisdiction profiles and the right-of-way decision they drive.
 
 A profile (``jurisdictions/<id>.json``) states which traffic rules decide who goes first at an
-intersection without a working signal. ``decide`` applies one to two approaches (anything with
+intersection without a working signal, and optionally (``green_rules``) between two vehicles that
+both have a circular green. ``decide`` applies one to two approaches (anything with
 ``.control``, ``.turn``, ``.heading``, ``.arrived``, ``.entered``, ``.through``, as
 ``responsibility.right_of_way.Approach`` has). It has no dependency on the scene code, so it can
 be tested on its own (``python jurisdiction.py`` runs the self-test).
@@ -22,7 +23,8 @@ from pathlib import Path
 PROFILE_DIR = Path(__file__).resolve().parent.parent / "jurisdictions"
 SAME_DIRECTION = math.radians(45.0)  # the same value as right_of_way.SAME_DIRECTION
 ONCOMING = math.radians(135.0)  # and right_of_way.ONCOMING
-STOP, NONE = "stop", "none"
+STOP, NONE, GO, RED = "stop", "none", "go", "red"
+RED_ARROW = "LANE_STATE_ARROW_STOP"  # the WOMD lane state of a red arrow
 
 
 def load_profile(name_or_path):
@@ -33,7 +35,8 @@ def load_profile(name_or_path):
         sys.exit("no profile %r; available: %s" % (str(name_or_path), ", ".join(list_profiles())))
     with open(path, encoding="utf-8") as f:
         profile = json.load(f)
-    unknown = [r for r in profile["all_way_stop"]["tie_rules"] + profile["uncontrolled_rules"] if r not in RULES]
+    named = profile["all_way_stop"]["tie_rules"] + profile["uncontrolled_rules"] + (profile.get("green_rules") or [])
+    unknown = [r for r in named if r not in RULES]
     if unknown:
         raise ValueError("profile %s names unknown rules %s; known: %s" % (path.name, unknown, sorted(RULES)))
     return profile
@@ -58,7 +61,8 @@ def _left(turn):
 # Each rule: (a, b, rel) -> "a" | "b" | None, who holds the right of way.
 
 def oncoming_left_yields(a, b, rel):
-    """A left turn yields to oncoming traffic (CVC 21801(a); StVO 9(3))."""
+    """A left turn (or U-turn) yields to oncoming traffic, straight on or turning right (CVC 21801(a);
+    StVO 9(3), (4)). Two oncoming left turners: no holder (StVO 9(4): they turn in front of each other)."""
     if abs(rel) > ONCOMING and _left(a.turn) != _left(b.turn):
         return "b" if _left(a.turn) else "a"
 
@@ -70,19 +74,22 @@ def oncoming_right_yields(a, b, rel):
 
 
 def oncoming_right_yields_left(a, b, rel):
-    """A right turner yields to an oncoming left turner (China, regulation 51)."""
+    """A right turner yields to an oncoming left turner (China, implementing regulations 51(7) and 52(4);
+    the opposite of StVO 9(4))."""
     if abs(rel) > ONCOMING and {a.turn, b.turn} == {"right", "left"}:
         return "b" if a.turn == "right" else "a"
 
 
 def turner_yields_straight(a, b, rel):
-    """A vehicle that turns yields to one that goes straight on (China, regulation 51)."""
+    """A vehicle that turns yields to one that goes straight on (China, implementing regulations 51(7)
+    and 52(3))."""
     if (a.turn == "straight") != (b.turn == "straight"):
         return "a" if a.turn == "straight" else "b"
 
 
 def yield_right(a, b, rel):
-    """The vehicle on the left yields to the one on the right (CVC 21800(b); StVO 8(1))."""
+    """The vehicle on the left yields to the one on the right (CVC 21800(b)(1), (c); StVO 8(1); China,
+    implementing regulations 52(2))."""
     if SAME_DIRECTION < rel < ONCOMING:
         return "b"
     if -ONCOMING < rel < -SAME_DIRECTION:
@@ -97,8 +104,15 @@ def yield_left(a, b, rel):
         return "b"
 
 
+def ending_road_yields(a, b, rel):
+    """At a T junction the road that ends there yields to the one that continues (CVC 21800(b)(1),
+    as an exception to yield_right on a simultaneous entry)."""
+    if {a.through, b.through} == {True, False}:
+        return "a" if a.through else "b"
+
+
 RULES = {f.__name__: f for f in (oncoming_left_yields, oncoming_right_yields, oncoming_right_yields_left,
-                                 turner_yields_straight, yield_right, yield_left)}
+                                 turner_yields_straight, yield_right, yield_left, ending_road_yields)}
 RULES["first_entered"] = None  # handled in decide: whoever entered the intersection first
 
 
@@ -122,9 +136,14 @@ def _apply(names, a, b, rel, tie_steps):
     return None, None
 
 
-def handles(a, b):
-    """Whether the profile decides this pair: neither faces a light, both face a stop sign or nothing."""
-    return a.control in (STOP, NONE) and b.control in (STOP, NONE)
+def handles(a, b, profile=None):
+    """Whether the profile decides this pair: neither faces a light (both face a stop sign or
+    nothing), or both entered on a circular green and the profile has ``green_rules``. Every other
+    signalised pair (a red light, a green arrow, an unknown light) is left to the CAT right-of-way
+    code."""
+    if a.control in (STOP, NONE) and b.control in (STOP, NONE):
+        return True
+    return a.control == b.control == GO and bool((profile or {}).get("green_rules"))
 
 
 def decide(profile, a, b, tie_steps=10):
@@ -133,6 +152,9 @@ def decide(profile, a, b, tie_steps=10):
     ``tie_steps``: arrivals (or entries) this many 0.1 s steps apart count as simultaneous.
     """
     rel = _rel(a, b)
+    if a.control == b.control == GO:
+        holder, name = _apply(profile.get("green_rules") or [], a, b, rel, tie_steps)
+        return holder, "green/" + name if name else "green/simultaneous"
     stop_a, stop_b = a.control == STOP, b.control == STOP
     if stop_a and stop_b:
         awy = profile["all_way_stop"]
@@ -157,6 +179,42 @@ def decide(profile, a, b, tie_steps=10):
         return ("a" if a.through else "b"), "through-road"
     holder, name = _apply(profile["uncontrolled_rules"], a, b, rel, tie_steps)
     return holder, "uncontrolled/" + name if name else "uncontrolled"
+
+
+def red_entry(profile, approach, stopped):
+    """How the profile's law sees ``approach`` entering the intersection, "" if it did not enter on red.
+
+    ``approach.control`` is the light at the stop line when the vehicle crossed it and
+    ``approach.signal`` the WOMD lane state behind it. ``stopped`` says whether the vehicle was seen
+    to stop before entering (None: its approach was not observed). The profile's ``red_turn``
+    (``turns``: the turns allowed on a circular red; ``stop_first``; ``sign_required``: only where
+    a sign allows it, which the maps do not show) decides:
+
+      ran_red_arrow              a red arrow forbids its movement (CVC 21453(c); China reg. 40)
+      ran_red                    a turn the profile does not allow on red, or straight on
+      turn_on_red_needs_sign     allowed only under a sign the map cannot show (StVO 37(2) Grünpfeil)
+      turn_on_red_without_stop   allowed after a stop, and the vehicle was seen not to stop
+      turn_on_red_stop_unseen    allowed after a stop, and the approach was not observed
+      lawful_turn_on_red         allowed (CVC 21453(b) after a stop; China reg. 38 without one)
+
+    Entering on red is a signal violation, not a right-of-way question: who had to yield is still
+    decided by the red-light rule (the vehicle on red yields), and it is aggressive only if it cost
+    someone something."""
+    if approach.control != RED or approach.entered is None:
+        return ""
+    if approach.signal == RED_ARROW:
+        return "ran_red_arrow"
+    rule = profile.get("red_turn") or {}
+    if approach.turn not in rule.get("turns", []):
+        return "ran_red"
+    if rule.get("sign_required"):
+        return "turn_on_red_needs_sign"
+    if rule.get("stop_first"):
+        if stopped is None:
+            return "turn_on_red_stop_unseen"
+        if not stopped:
+            return "turn_on_red_without_stop"
+    return "lawful_turn_on_red"
 
 
 def _self_test():
@@ -203,6 +261,50 @@ def _self_test():
                  (ap(0, "straight", control=NONE), ap(90, "left", control=NONE)),
                  (ap(0, "left", control=NONE, through=False), ap(90, "straight", control=NONE))]:
         assert decide(us, a, b)[0] == decide(lh, mirror(a), mirror(b))[0], (a.turn, b.turn, decide(us, a, b), decide(lh, mirror(a), mirror(b)))
+
+    st, de, cn = load_profile("us-california-statute"), load_profile("germany-draft"), load_profile("china-draft")
+    # the CVC as written: whoever entered first (21800(a)), then on a simultaneous entry the
+    # terminating highway yields (21800(b)(1)), then yield to the right
+    a, b = ap(0, "straight", control=NONE, entered=10), ap(90, "straight", control=NONE, entered=40)
+    assert decide(st, a, b) == ("a", "uncontrolled/first_entered"), decide(st, a, b)
+    a, b = ap(0, "straight", control=NONE, entered=10), ap(90, "straight", control=NONE, entered=15)
+    assert decide(st, a, b) == ("b", "uncontrolled/yield_right"), decide(st, a, b)
+    a, b = ap(0, "straight", control=NONE, entered=10), ap(90, "left", control=NONE, entered=15, through=False)
+    assert decide(st, a, b) == ("a", "uncontrolled/ending_road_yields"), decide(st, a, b)
+    a, b = ap(0, "straight", control=NONE, entered=40), ap(90, "left", control=NONE, entered=10, through=False)
+    assert decide(st, a, b) == ("b", "uncontrolled/first_entered"), decide(st, a, b)
+    # Germany: rechts vor links holds at a T junction too (StVO 8(1)); the US profile lets the road end yield
+    a, b = ap(0, "straight", control=NONE), ap(90, "left", control=NONE, through=False)
+    assert decide(de, a, b) == ("b", "uncontrolled/yield_right"), decide(de, a, b)
+    assert decide(us, a, b) == ("a", "through-road")
+    # a left turner and an oncoming right turner: Germany has the left turner yield (StVO 9(4)),
+    # China the right turner (reg. 52(4))
+    a, b = ap(0, "left", control=NONE), ap(180, "right", control=NONE)
+    assert decide(de, a, b)[0] == "b" and decide(cn, a, b) == ("a", "uncontrolled/oncoming_right_yields_left")
+    # China: the car from the right (reg. 52(2)); a turner yields to an oncoming car going straight (52(3))
+    a, b = ap(0, "straight", control=NONE), ap(90, "straight", control=NONE)
+    assert decide(cn, a, b) == ("b", "uncontrolled/yield_right")
+    a, b = ap(0, "right", control=NONE), ap(180, "straight", control=NONE)
+    assert decide(cn, a, b) == ("b", "uncontrolled/turner_yields_straight")
+    # on a circular green the profile decides only if it has green_rules (China 51(7), StVO 9(3)/(4));
+    # California's signalised rules stay with the CAT code
+    a, b = ap(0, "left", control=GO), ap(180, "straight", control=GO)
+    assert handles(a, b, cn) and handles(a, b, de) and not handles(a, b, us) and not handles(a, b)
+    assert decide(cn, a, b) == ("b", "green/turner_yields_straight") and decide(de, a, b)[0] == "b"
+    a, b = ap(0, "left", control=GO), ap(180, "left", control=GO)
+    assert decide(de, a, b) == (None, "green/simultaneous")  # two oncoming left turners: no holder
+    # entering on red: a right turn is lawful in China without a stop, in California after one, in
+    # Germany only under a Grünpfeil sign; a red arrow and going straight on are never lawful
+    red = lambda turn, signal="LANE_STATE_STOP": N(control=RED, signal=signal, turn=turn, entered=30)
+    assert red_entry(cn, red("right"), None) == "lawful_turn_on_red"
+    assert red_entry(us, red("right"), True) == "lawful_turn_on_red"
+    assert red_entry(us, red("right"), False) == "turn_on_red_without_stop"
+    assert red_entry(us, red("right"), None) == "turn_on_red_stop_unseen"
+    assert red_entry(de, red("right"), True) == "turn_on_red_needs_sign"
+    assert red_entry(us, red("straight"), True) == "ran_red"
+    assert red_entry(cn, red("right", RED_ARROW), True) == "ran_red_arrow"
+    assert red_entry(lh, red("left"), True) == "lawful_turn_on_red"
+    assert red_entry(us, N(control=GO, signal="LANE_STATE_GO", turn="left", entered=30), None) == ""
     print("jurisdiction self-test passed; profiles:", ", ".join(list_profiles()))
 
 

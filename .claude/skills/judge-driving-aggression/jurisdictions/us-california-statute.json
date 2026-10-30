@@ -1,0 +1,36 @@
+{
+  "id": "us-california-statute",
+  "name": "United States, California Vehicle Code 21800-21802 as written (right-hand traffic)",
+  "status": "draft: the statute's rules in the statute's order, checked against the text of the Vehicle Code on 2026-10-30, not validated on any data. Use it on maps whose junction control is complete. On WOMD maps, junctions without mapped control are mostly controlled in reality, which is why us-california leaves out first_entered and yield_right there.",
+  "driving_side": "right",
+  "all_way_stop": {
+    "first_arrival": true,
+    "unknown_order": "none",
+    "tie_rules": [
+      "oncoming_left_yields",
+      "yield_right"
+    ]
+  },
+  "uncontrolled_rules": [
+    "oncoming_left_yields",
+    "first_entered",
+    "ending_road_yields",
+    "yield_right"
+  ],
+  "t_junction": "none",
+  "notes": [
+    "21801(a) and 21800(e)(3): a left or U-turner yields to oncoming vehicles close enough to be a hazard; 21800 does not apply between them.",
+    "21800(a): a vehicle that has already entered the intersection from a different highway goes first (first_entered, entries more than 1 s apart).",
+    "21800(b)(1), (b)(2): on a simultaneous entry, the driver on a terminating highway (T junction) yields to vehicles on the continuing highway; otherwise the driver on the left yields to the driver on the immediate right. The T-junction rule is therefore applied only after first_entered (t_junction is none and ending_road_yields is in the list).",
+    "21800(c): all-way stop, simultaneous entry: the driver on the left yields to the driver on the right. 21802(a), (c): at a stop sign the stopped driver yields to cross traffic, unless every approach has a stop sign.",
+    "21800(d): an inoperative signal is treated as an all-way stop. The CAT code reports a light whose state is unknown as signal-unknown and gives no holder; it cannot tell an unobserved light from one that is dark.",
+    "Signalised pairs are decided by the CAT right-of-way code (21451, 21453, 21801 on green).",
+    "21453(a)-(c): on a circular red, stop; then a right turn (or a left turn from a one-way street onto a one-way street, which the map cannot tell) is allowed, yielding. A red arrow forbids its movement."
+  ],
+  "red_turn": {
+    "turns": [
+      "right"
+    ],
+    "stop_first": true
+  }
+}

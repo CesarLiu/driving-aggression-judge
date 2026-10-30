@@ -6,12 +6,24 @@
   "all_way_stop": {
     "first_arrival": true,
     "unknown_order": "none",
-    "tie_rules": ["oncoming_right_yields", "yield_left"]
+    "tie_rules": [
+      "oncoming_right_yields",
+      "yield_left"
+    ]
   },
-  "uncontrolled_rules": ["oncoming_right_yields"],
+  "uncontrolled_rules": [
+    "oncoming_right_yields"
+  ],
   "t_junction": "ending_road_yields",
   "notes": [
     "A right turn crosses the oncoming lane in left-hand traffic and yields to it; the vehicle on the right yields to the one on the left.",
-    "Many left-hand countries (UK, Japan, Australia) do not use all-way stops and give priority by sign, marking or roundabout rules. Edit all_way_stop and add rules before relying on this profile."
-  ]
+    "Many left-hand countries (UK, Japan, Australia) do not use all-way stops and give priority by sign, marking or roundabout rules. Edit all_way_stop and add rules before relying on this profile.",
+    "The mirror of California's 21453(b): a left turn after a stop on a circular red (placeholder, not any country's law)."
+  ],
+  "red_turn": {
+    "turns": [
+      "left"
+    ],
+    "stop_first": true
+  }
 }

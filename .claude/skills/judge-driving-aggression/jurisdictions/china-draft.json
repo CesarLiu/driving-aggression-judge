@@ -1,18 +1,41 @@
 {
   "id": "china-draft",
-  "name": "China, Regulations for the Implementation of the Road Traffic Safety Law, article 51 (right-hand traffic)",
-  "status": "draft: written from the regulation as I recall it, not checked against the current text and not validated on any data. Confirm with a local traffic-law expert before using results.",
+  "name": "China, Road Traffic Safety Law art. 44 and its Implementing Regulations art. 38, 51, 52 (right-hand traffic)",
+  "status": "draft: rules taken from the text of the Implementing Regulations (State Council order 405 of 2004, revised 2017-10-07), checked on 2026-10-30 against a published copy, not the official gazette. Not validated on any data. Article 52 lists its rules without saying how they combine when two apply; the order here is the article's order. Confirm with a local traffic-law expert before using results.",
   "driving_side": "right",
   "all_way_stop": {
     "first_arrival": false,
     "unknown_order": "none",
-    "tie_rules": ["turner_yields_straight", "oncoming_right_yields_left", "yield_right"]
+    "tie_rules": [
+      "yield_right",
+      "turner_yields_straight",
+      "oncoming_right_yields_left"
+    ]
   },
-  "uncontrolled_rules": ["turner_yields_straight", "oncoming_right_yields_left", "yield_right"],
-  "t_junction": "ending_road_yields",
+  "uncontrolled_rules": [
+    "yield_right",
+    "turner_yields_straight",
+    "oncoming_right_yields_left"
+  ],
+  "t_junction": "none",
+  "green_rules": [
+    "turner_yields_straight",
+    "oncoming_right_yields_left"
+  ],
   "notes": [
-    "Where signs or markings control the junction the vehicle with priority goes first.",
-    "Without them: stop and look, yield to the vehicle on the right-hand road, a turning vehicle yields to one going straight, and an oncoming right turner yields to a left turner.",
-    "All-way stops with an arrival order are not a Chinese convention, so first_arrival is false here."
-  ]
+    "Law art. 44: at a junction without lights, signs, markings or a police officer, slow down and let pedestrians and vehicles with priority go first.",
+    "Reg. 52 (no light, no police officer): (1) where signs or markings control the junction, the side they give priority goes first; (2) otherwise stop and look before entering and yield to vehicles coming from the road on the right (yield_right); (3) a turning vehicle yields to one going straight (turner_yields_straight); (4) of two vehicles from opposite directions, the right turner yields to the left turner (oncoming_right_yields_left, the opposite of Germany's StVO 9(4)).",
+    "Reg. 52 has no rule for a road that ends at a T junction (t_junction none): without a sign, yield_right decides there too.",
+    "Reg. 52 has no arrival-order rule. A junction with a stop sign (停车让行) on every approach is therefore decided like an unsigned one (first_arrival false; every pair goes through tie_rules, and unknown_order does not apply).",
+    "Reg. 51(7) (signalised junction without arrow lights): a turning vehicle yields to vehicles going straight and to pedestrians, and an oncoming right turner yields to a left turner: green_rules, applied when both have a circular green. Reg. 38(1): on green, turning vehicles must not obstruct the released straight-on traffic.",
+    "No specific article on entering from a driveway or private ground was checked. The CAT code's driveway rule (the one entering from off the road yields) is kept as it is.",
+    "Roundabouts (Reg. 51(2): yield to vehicles already in the roundabout) are not modelled.",
+    "Reg. 38(1): on red, a right-turning vehicle may proceed if it does not obstruct the released vehicles and pedestrians; no stop is required. Reg. 40 and 41: a red arrow (or red cross) forbids its lane or direction. Who must yield is still the red-light rule of the CAT code: the vehicle on red yields."
+  ],
+  "red_turn": {
+    "turns": [
+      "right"
+    ],
+    "stop_first": false
+  }
 }

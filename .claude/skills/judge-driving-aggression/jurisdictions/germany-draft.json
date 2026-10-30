@@ -1,18 +1,38 @@
 {
   "id": "germany-draft",
-  "name": "Germany, StVO sections 8 and 9 (right-hand traffic)",
-  "status": "draft: written from the statute as I recall it, not checked against the current text and not validated on any data. Confirm with a local traffic-law expert before using results.",
+  "name": "Germany, StVO §§ 8, 9, 10 and 37 (right-hand traffic)",
+  "status": "draft: rules taken from the text of the StVO (gesetze-im-internet.de, checked on 2026-10-30), not validated on any data. Confirm with a local traffic-law expert before using results.",
   "driving_side": "right",
   "all_way_stop": {
     "first_arrival": false,
     "unknown_order": "none",
-    "tie_rules": ["yield_right", "oncoming_left_yields"]
+    "tie_rules": [
+      "oncoming_left_yields",
+      "yield_right"
+    ]
   },
-  "uncontrolled_rules": ["yield_right", "oncoming_left_yields"],
-  "t_junction": "ending_road_yields",
+  "uncontrolled_rules": [
+    "oncoming_left_yields",
+    "yield_right"
+  ],
+  "t_junction": "none",
+  "green_rules": [
+    "oncoming_left_yields"
+  ],
   "notes": [
-    "Section 8(1): at a junction without priority signs the vehicle from the right has priority (rechts vor links).",
-    "Section 9(3): a vehicle that turns across the oncoming lane lets oncoming vehicles pass.",
-    "A stop or give-way sign gives priority to the cross road: that is the two-way stop rule in the engine."
-  ]
+    "§ 8(1): at crossings and T junctions (Kreuzungen und Einmündungen) the vehicle coming from the right has priority (rechts vor links), unless signs 205, 206, 301 or 306 regulate it, or the other comes from a field or forest track. The road that ends has no priority of its own (t_junction none).",
+    "§ 9(3), (4): a turning driver lets oncoming vehicles pass; a left turner lets an oncoming right turner pass (oncoming_left_yields). Two oncoming left turners turn in front of each other: no holder.",
+    "Signs 205 (give way) and 206 (stop) give priority to the cross road; the engine's two-way-stop rule covers 206. The StVO has no all-way stop. If every approach carries a stop sign, no sign gives anyone priority and § 8(1) is applied (first_arrival false). This is an interpretation, not in the text.",
+    "§ 9(3), (4) also apply on green: green_rules, used when both have a circular green. § 37(2) Grünpfeil (sign 720): a right turn on red only after stopping, without obstructing; the CAT code's red-light rule (the one on red yields) matches it.",
+    "§ 10: a vehicle entering the road from private ground, a lowered kerb or a field track yields to all others. The CAT code's driveway rule matches it. Field and forest tracks (§ 8(1) no. 2) are not distinguished on WOMD-style maps.",
+    "Not modelled: roundabouts (§ 8(1a)), priority that turns with the road (abknickende Vorfahrt, sign 306 with a supplementary sign), and police or signals that override signs (§ 37, § 36).",
+    "§ 37(2) no. 1: on red, stop before the junction. A right turn after stopping, from the right-hand lane only, is allowed only where a Grünpfeil sign is fixed beside the red light. The maps do not show the sign, so a right turn on red is reported as turn_on_red_needs_sign."
+  ],
+  "red_turn": {
+    "turns": [
+      "right"
+    ],
+    "stop_first": true,
+    "sign_required": true
+  }
 }

@@ -35,8 +35,19 @@ vehicle something; and labels made by people who do not know the traffic rules c
 
 2. **Pick the jurisdiction.** Ask the user if they have not said. WOMD is entirely US cities, so
    `us-california` is the default there; other datasets need the profile of where they were
-   recorded. `python scripts/jurisdiction.py` lists the profiles. Only `us-california` has been
-   validated; the others are drafts (the script warns). If the user needs a country with no
+   recorded. `python scripts/jurisdiction.py` lists the profiles.
+   - Only `us-california` has been validated; the others are drafts (the script warns).
+   - The drafts `us-california-statute`, `germany-draft` and `china-draft` have had their rules
+     checked against the text of the law, but not against data.
+   - `us-california-statute` applies the Vehicle Code as written. Use it only on maps whose junction
+     control is complete: on WOMD maps, junctions drawn without control mostly have signs the map
+     lacks.
+   - The places differ, and the profile decides which way a verdict goes. At a T junction
+     Germany and China apply yield-to-the-right while California makes the ending road yield. A
+     left turner yields to an oncoming right turner in Germany, but the right turner yields in
+     China (`references/jurisdictions.md`).
+
+   If the user needs a country with no
    profile, follow "Adding a jurisdiction" in `references/jurisdictions.md` and say plainly that
    the result is unvalidated until a local expert has checked it.
 
