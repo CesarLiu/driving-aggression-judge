@@ -27,6 +27,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import jurisdiction  # noqa: E402
+from lights import infer_lights  # noqa: E402
 from scenes import PAIR_MODES, NeedsTorch, load_scene, pick_pair  # noqa: E402
 from responsibility import lanes as lanes_mod  # noqa: E402
 from responsibility import right_of_way as R  # noqa: E402
@@ -114,6 +115,22 @@ def victim_impact(idx, arc, v, s_star, t_x, pet, victim_stops, hard_brake, close
     return speed, max_dec, bool(why), "+".join(why)
 
 
+STOPPED = 0.5  # m/s: slower than this is a stop
+STOP_LOOKBACK = 50  # steps before entering in which a stop counts (5 s)
+
+
+def stopped_before(scene, i, entered):
+    """Whether vehicle i was seen to stop in the 5 s before stepping into the intersection at
+    ``entered``; None when it entered after its last seen step or less than 1 s of its approach
+    was seen."""
+    if entered is None or entered > np.flatnonzero(scene.valid[i])[-1]:
+        return None
+    steps = [t for t in range(max(0, entered - STOP_LOOKBACK), entered + 1) if scene.valid[i, t]]
+    if len(steps) < 10:
+        return None
+    return bool(np.linalg.norm(scene.velocity[i, steps], axis=1).min() < STOPPED)
+
+
 def track_turn(scene, i, idx, arc, s_star, R):
     """The turn the agent actually made, from its own heading 20 m before and after the conflict point
     (the lane-based turn of right_of_way.py is sometimes wrong where lanes fan out)."""
@@ -136,6 +153,10 @@ def screen_pair(R, lanes_mod, scene, a, o, profile, tie_steps, hard_brake=3.0, c
            "flags": ""}
     if pr.conflict is None or pr.approaches is None:
         return row
+    if pr.conflict.kind == "closest":  # the paths never cross or merge: only their closest approach, no priority
+        row.update(case="paths-do-not-cross", conflict="closest", angle_deg=round(math.degrees(pr.conflict.angle), 1),
+                   conflict_x=round(float(pr.conflict.point[0]), 1), conflict_y=round(float(pr.conflict.point[1]), 1))
+        return row
     A, B = pr.approaches
     ia, arc_a, v_a = arc_and_speed(scene, a)
     io, arc_o, v_o = arc_and_speed(scene, o)
@@ -154,10 +175,12 @@ def screen_pair(R, lanes_mod, scene, a, o, profile, tie_steps, hard_brake=3.0, c
                sdc_control=A.control, ooi_control=B.control, sdc_turn=A.turn, ooi_turn=B.turn)
     holder = {a: "sdc", o: "ooi", None: "none"}[pr.holder]
     case = pr.case
-    if pr.case not in SIGNAL_CASES_PASSED_THROUGH and jurisdiction.handles(A, B):
+    if pr.case not in SIGNAL_CASES_PASSED_THROUGH and jurisdiction.handles(A, B, profile):
         h, case = jurisdiction.decide(profile, A, B, tie_steps)
         holder = {"a": "sdc", "b": "ooi", None: "none"}[h]
     row["case"], row["holder"] = case, holder
+    for role, x, ap_ in (("sdc", a, A), ("ooi", o, B)):  # entering on red: a signal violation, not a right of way
+        row[role + "_red_entry"] = jurisdiction.red_entry(profile, ap_, stopped_before(scene, x, ap_.entered))
 
     t_a, t_o = time_at(ia, arc_a, pr.conflict.s[0]), time_at(io, arc_o, pr.conflict.s[1])
     if t_a == t_a and t_o == t_o:
@@ -214,11 +237,16 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--agent", help="track id of the first agent (default: the SDC); needs --other")
     ap.add_argument("--other", help="track id of the second agent (default: the other object of interest)")
+    ap.add_argument("--part", default=None,
+                    help="K/N: only every N-th scene file starting at the K-th (0-based), to run N processes")
     ap.add_argument("--pairs", choices=PAIR_MODES, default="auto",
                     help="which pair to judge when --agent is not given (see scenes.pick_pair)")
     ap.add_argument("--tie-seconds", type=float, default=1.0, help="arrivals this close count as simultaneous")
     ap.add_argument("--hard-brake", type=float, default=3.0,
                     help="m/s²: braking this hard by a vehicle without a stop sign of its own is a cost forced on it")
+    ap.add_argument("--infer-lights", action="store_true",
+                    help="fill in light states WOMD leaves unknown (lights.py: hold 1 s, borrow from sibling "
+                         "lanes); rows whose case changed are flagged lights_inferred(was=<case>)")
     ap.add_argument("--close-pet", type=float, default=1.5,
                     help="s: reaching the conflict this soon after the other, while moving, is being cut close")
     args = ap.parse_args()
@@ -228,7 +256,11 @@ def main():
         print("WARNING: profile %s is a draft: %s" % (profile["id"], profile["status"]), file=sys.stderr)
     tie_steps = int(round(args.tie_seconds / DT))
     rows, skipped = [], 0
-    for path in scene_files(args.scenes):
+    files = scene_files(args.scenes)
+    if args.part:
+        k, n = (int(x) for x in args.part.split("/"))
+        files = files[k::n]
+    for path in files:
         try:
             scene, fmt = load_scene(path, Scene)
             if args.agent:
@@ -240,7 +272,14 @@ def main():
                     skipped += 1
                     continue
                 a, o, how = pair
-            row = screen_pair(R, lanes_mod, scene, a, o, profile, tie_steps, args.hard_brake, args.close_pet)
+            if args.infer_lights:
+                filled, _ = infer_lights(scene)
+                row = screen_pair(R, lanes_mod, filled, a, o, profile, tie_steps, args.hard_brake, args.close_pet)
+                before = R.priority(scene, a, o, scene.n_steps - 1, R.RightOfWayParams()).case
+                if before != row["case"] and before == "signal-unknown":
+                    row["flags"] = (row["flags"] + ";" if row["flags"] else "") + "lights_inferred(was=%s)" % before
+            else:
+                row = screen_pair(R, lanes_mod, scene, a, o, profile, tie_steps, args.hard_brake, args.close_pet)
         except NeedsTorch as exc:  # the whole folder is in that format: stop with one clear message
             sys.exit(str(exc))
         except Exception as exc:  # one bad scene must not stop a batch
@@ -261,7 +300,7 @@ def main():
             "ooi_violation", "victim_speed_at_pass", "victim_max_decel", "affected", "affected_by",
             "sdc_aggressive_candidate",
             "ooi_aggressive_candidate", "confidence", "conflict", "angle_deg", "conflict_x", "conflict_y",
-            "sdc_control", "ooi_control", "sdc_turn", "ooi_turn", "flags"]
+            "sdc_control", "ooi_control", "sdc_turn", "ooi_turn", "sdc_red_entry", "ooi_red_entry", "flags"]
     # the same recording cut at different times gives the same conflict point and angle
     seen = {}
     for r in rows:

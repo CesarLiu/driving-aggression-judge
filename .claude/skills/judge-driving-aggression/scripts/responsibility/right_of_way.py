@@ -194,6 +194,7 @@ TURN = np.deg2rad(30.0)  # rad: a lane turning more than this is a turn
 U_TURN = np.deg2rad(150.0)  # rad: and more than this a U-turn
 SIGN_OFFSET = 7.0  # m: a stop sign without lanes controls an approach it stands this close to, on its right
 LANE_NEAR = 3.0  # m: a controlled lane not yet entered leads to P* when it passes this close to it
+OFF_LANE_SEEN = 5.0  # m of observed approach without a lane before an agent counts as off the road
 GO, RED, ARROW, STOP, NONE, UNKNOWN = "go", "red", "arrow", "stop", "none", "unknown"
 LIGHTS = {  # WOMD lane state -> the control it imposes
     "LANE_STATE_GO": GO, "LANE_STATE_CAUTION": GO, "LANE_STATE_ARROW_CAUTION": GO,
@@ -244,8 +245,10 @@ class Approach:
     changed_lane: bool  # moved in from a neighbouring lane before P*
     arrived: Optional[int] = None  # step it came within ARRIVE metres of its stop line (-1: before it was
                                    # first seen; None: not seen to)
-    on_lane: bool = True  # on a mapped lane within APPROACH metres before P* (not a driveway or a car park)
+    on_lane: Optional[bool] = True  # on a mapped lane within APPROACH metres before P* (not a driveway or a car
+                                    # park); None: less than OFF_LANE_SEEN of its approach was seen
     through: Optional[bool] = None  # its road continues across the junction (False: it ends there; None: unknown)
+    signal: Optional[str] = None  # the WOMD lane state behind ``control`` when a light gave it (e.g. LANE_STATE_ARROW_STOP)
 
 
 @dataclass
@@ -475,7 +478,7 @@ def _approach(scene: Scene, agent: int, path: _Path, s_star: float, p: RightOfWa
             continue
         block.insert(0, k)
 
-    control, line = None, None  # line: the controlled lane the agent entered, or is about to
+    control, line, signal = None, None, None  # line: the controlled lane the agent entered, or is about to
     if block:
         lit = [k for k in block if runs[k][0] in lights]
         line, k0, _ = runs[lit[0] if lit else block[0]]
@@ -491,6 +494,7 @@ def _approach(scene: Scene, agent: int, path: _Path, s_star: float, p: RightOfWa
         step = min(step, int(path.steps[-1]))
         state = states[step] if step < len(states) else None
         control = LIGHTS.get(state, UNKNOWN) if state else UNKNOWN
+        signal = state or None
     elif line is not None:
         control = STOP
     else:
@@ -522,8 +526,10 @@ def _approach(scene: Scene, agent: int, path: _Path, s_star: float, p: RightOfWa
     changed = any(b[0] in graph.sides.get(a[0], []) or a[0] in graph.sides.get(b[0], [])
                   for a, b in zip(runs, runs[1:]))
     near = [r for r in runs if path.s[first + r[2]] >= s_star - p.approach]  # runs within APPROACH of P*
-    return Approach(control, heading, kind, entered, changed, arrived=arrived, on_lane=bool(near),
-                    through=_through(graph, near[0][0], conflict_lane) if near else None)
+    seen = min(s_star, float(path.s[path.n_real - 1])) - max(s_star - p.approach, 0.0)  # observed approach (m)
+    on_lane = True if near else False if seen >= OFF_LANE_SEEN else None
+    return Approach(control, heading, kind, entered, changed, arrived=arrived, on_lane=on_lane,
+                    through=_through(graph, near[0][0], conflict_lane) if near else None, signal=signal)
 
 
 def _through(graph, approach: str, conflict_lane: Optional[str]) -> Optional[bool]:
@@ -567,7 +573,7 @@ def _rules(a: Approach, b: Approach, merge: bool, p: RightOfWayParams) -> Tuple[
             return ("b" if a.changed_lane else "a"), "lane-change"
         holder = first(a.entered, b.entered) if merge else None
         return holder, "merge" if holder is not None else "same-direction"
-    if a.on_lane != b.on_lane:  # entering the road from a driveway or a car park (21804(a))
+    if None not in (a.on_lane, b.on_lane) and a.on_lane != b.on_lane:  # from a driveway or a car park (21804(a))
         return ("a" if a.on_lane else "b"), "driveway"
     lhs = p.traffic_side == "left"
     across = "right" if lhs else "left"  # the turn across oncoming traffic

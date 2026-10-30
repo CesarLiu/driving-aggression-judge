@@ -340,6 +340,8 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--agent", help="track id of the first agent (default: the SDC); needs --other")
     ap.add_argument("--other", help="track id of the second agent (default: the other object of interest)")
+    ap.add_argument("--part", default=None,
+                    help="K/N: only every N-th scene file starting at the K-th (0-based), to run N processes")
     ap.add_argument("--pairs", choices=PAIR_MODES, default="auto",
                     help="which pair to judge when --agent is not given (see scenes.pick_pair)")
     ap.add_argument("--cut-in-thw", type=float, default=0.8, help="s: a cut-in leaving less headway than this")
@@ -357,7 +359,11 @@ def main():
 
 
     rows = []
-    for path in scene_files(args.scenes):
+    files = scene_files(args.scenes)
+    if args.part:
+        k, n = (int(x) for x in args.part.split("/"))
+        files = files[k::n]
+    for path in files:
         try:
             scene, fmt = load_scene(path, Scene)
             if args.agent:
