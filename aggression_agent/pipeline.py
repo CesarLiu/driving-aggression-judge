@@ -6,9 +6,10 @@
    same-direction candidate, when a screen note marks a borderline or doubtful case, or when the two
    cars end up in one lane after starting side by side without the screen having seen a lane change
    (the lane-branch blind spot). Every other scene keeps the screens' verdict: not aggressive.
-3. **Review**: one reviewer agent per triaged scene.
-4. **Critique**: a critic agent where the reviewer overruled the screens, was unsure (low confidence)
-   or asked for a second look; its verdict is final.
+3. **Review**: a reviewer per batch of triaged scenes (``--batch``, text only), or one agent per scene
+   with the scene tools and a figure (``--batch 1``).
+4. **Critique**: a critic agent where the reviewer overruled the screens (``--critic unsure``: also where
+   it was unsure or asked for a second look); its verdict is final.
 5. **Labels**: ``labels.csv`` (every screened scene), ``disagreements.csv`` (final verdict differs from
    the screens), ``report.md``; ``reviews/<scene>.json`` keeps each agent's verdict, tool calls and
    cost, and ``figures/`` the figures the agents looked at.
@@ -152,7 +153,93 @@ def disagrees(verdict, cross, same):
     return False
 
 
+def wants_critic(final, cross, same, args):
+    if final is None or args.critic == "none":
+        return False
+    unsure = final["needs_second_look"] or "low" in (final["first"]["confidence"], final["second"]["confidence"])
+    return args.critic == "all" or disagrees(final, cross, same) or (args.critic == "unsure" and unsure)
+
+
+def chunks(items, n):
+    return [items[i:i + n] for i in range(0, len(items), n)]
+
+
+async def review_batched(names, screens, args, run, rules, agents):
+    """``--batch N``: N scenes per request, text only and without tools, then the critic the same way
+    over the scenes whose reviewer verdict disagreed with the screens. A request's cost is shared out
+    evenly over its scenes. A reviewer verdict waiting for its critic is saved with ``critic_pending``,
+    so a resumed run still sends it to the critic."""
+    sem = asyncio.Semaphore(args.concurrency)
+    reviews = run / "reviews"
+    reviews.mkdir(exist_ok=True)
+    recs = {}
+    for name in names:
+        path = reviews / ("%s.json" % name)
+        if path.exists():
+            recs[name] = json.loads(path.read_text(encoding="utf-8"))
+
+    def save(rec):
+        (reviews / ("%s.json" % rec["scene"])).write_text(json.dumps(rec, indent=1, ensure_ascii=False),
+                                                          encoding="utf-8")
+
+    def shared(r, group, role):
+        """The request's record without its verdicts, shared by the scenes of the group."""
+        return dict({k: v for k, v in r.items() if k != "verdict"}, batch=group, cost_usd=r["cost_usd"] / len(group),
+                    role=role)
+
+    async def one_batch(group, ask, role, apply):
+        async with sem:
+            try:
+                r = await ask(group)
+            except Exception as exc:  # one failed request must not cancel the others' paid work
+                print("batch of %d (%s...): %s run failed: %s: %s" % (len(group), group[0], role, type(exc).__name__,
+                                                                      exc), file=sys.stderr)
+                return
+        got = {v["scene"]: v for v in (r["verdict"] or {}).get("verdicts", []) if isinstance(v, dict)}
+        ids = [n if isinstance(n, str) else n[0] for n in group]
+        for name in ids:
+            v = got.get(name)
+            if v is None:
+                print("%s: no %s verdict in its batch (%s)" % (name, role, r["subtype"]), file=sys.stderr)
+                continue
+            v = {k: x for k, x in v.items() if k != "scene"}
+            apply(name, v, shared(r, ids, role))
+        print("%s batch of %d: %d verdicts ($%.3f)" % (role, len(ids), sum(n in got for n in ids), r["cost_usd"]),
+              flush=True)
+
+    def after_review(name, v, meta):
+        c, s = screens["crossing"].get(name), screens["same_direction"].get(name)
+        rec = {"scene": name, "reviewer": dict(meta, verdict=v), "final": v, "source": "reviewer",
+               "cost_usd": meta["cost_usd"]}
+        if wants_critic(v, c, s, args):
+            rec["critic_pending"] = True
+        recs[name] = rec
+        save(rec)
+
+    def after_critic(name, v, meta):
+        rec = recs[name]
+        rec.update(critic=dict(meta, verdict=v), final=v, source="critic", cost_usd=rec["cost_usd"] + meta["cost_usd"])
+        rec.pop("critic_pending", None)
+        save(rec)
+
+    # a batch can come back without some of its scenes (the model ran out of turns, or skipped one):
+    # those are sent again in batches of 3, once
+    for size in (args.batch, 3):
+        todo = [n for n in names if not (recs.get(n) or {}).get("final")]
+        print("reviewer: %d scenes in batches of %d" % (len(todo), size), flush=True)
+        await asyncio.gather(*(one_batch(g, lambda g: agents.review_batch(g, rules, args.reviewer_model, args.budget),
+                                         "reviewer", after_review) for g in chunks(todo, size)))
+    for size in (args.batch, 3):
+        pending = [(n, recs[n]["final"]) for n in names if (recs.get(n) or {}).get("critic_pending")]
+        print("critic: %d scenes in batches of %d" % (len(pending), size), flush=True)
+        await asyncio.gather(*(one_batch(g, lambda g: agents.criticise_batch(g, rules, args.critic_model, args.budget * 1.5),
+                                         "critic", after_critic) for g in chunks(pending, size)))
+    return recs
+
+
 async def review_all(names, screens, args, run, rules, agents):
+    if getattr(args, "batch", 1) > 1 and hasattr(agents, "review_batch"):
+        return await review_batched(names, screens, args, run, rules, agents)
     sem = asyncio.Semaphore(args.concurrency)
     reviews = run / "reviews"
     reviews.mkdir(exist_ok=True)
@@ -181,10 +268,7 @@ async def review_all(names, screens, args, run, rules, agents):
         c, s = screens["crossing"].get(name), screens["same_direction"].get(name)
         if final is None:
             print("%s: reviewer gave no verdict (%s)" % (name, r["subtype"]), file=sys.stderr)
-        want = final is not None and args.critic != "none" and (
-            args.critic == "all" or final["needs_second_look"] or disagrees(final, c, s)
-            or "low" in (final["first"]["confidence"], final["second"]["confidence"]))
-        if want:
+        if wants_critic(final, c, s, args):
             k = await agents.criticise(name, final, rules, args.critic_model, fig_dir, args.budget * 1.5, args.max_turns)
             rec["critic"] = k
             if k["verdict"] is not None:
@@ -304,6 +388,8 @@ async def run_pipeline(args):
     reviews = {}
     if names and not args.screen_only:
         agents = load_backend(args)
+        if hasattr(agents, "EFFORT"):
+            agents.EFFORT = args.effort
         rules = agents.rules_text(args.skill_dir, profile)
         reviews = await review_all(names, screens, args, run, rules, agents)
     write_outputs(run, screens, paths, picked, reviews, profile)

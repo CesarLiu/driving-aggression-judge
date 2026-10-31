@@ -51,10 +51,27 @@ python main.py run ... --only 237,293       # a few scenes
 python main.py propose --run runs/cat500    # rule proposals from the run's disagreements
 ```
 
-Runs resume: screen CSVs and finished reviews in the run folder are reused. Useful options include
-`--concurrency` (default 3), `--critic disagree|all|none`, `--reviewer-model` (default
-`claude-haiku-5-5`), `--critic-model` (default `claude-sonnet-5-5`), `--budget` (USD cap per reviewer
-run; the critic gets 1.5x) and `--profile` (jurisdiction).
+Runs resume: screen CSVs and finished reviews in the run folder are reused. Useful options include:
+- `--batch` (default 10): scenes per request. Each scene goes in as text (the overview and the time
+  series every 0.5 s), with no tools and no figure. `--batch 1` gives one agent per scene with the
+  scene tools and the figure attached (claude backend; the openai backend is always one per scene).
+- `--concurrency` (default 3): requests at once.
+- `--critic disagree|unsure|all|none`. The default, `disagree`, sends a scene to the critic only when
+  the reviewer overrules the screens. `unsure` also sends low-confidence verdicts and those that ask
+  for a second look.
+- `--effort low|medium|high` (default low).
+- `--reviewer-model` (default `claude-haiku-5-5`) and `--critic-model` (default `claude-sonnet-5-5`).
+- `--budget`: USD cap per scene; the critic gets 1.5x.
+- `--profile`: the jurisdiction.
+
+Batching cuts cost because a scene's facts are sent once rather than again on every turn, and
+because far fewer scenes reach the critic. Measured on 20 WOMD scenes on 2026-10-31:
+- $0.125 against $0.266 one agent per scene;
+- the same verdict on 19 of 20; the twentieth is a borderline lane merge.
+
+Haiku 5.5 thinks about 3.3k tokens per scene whatever the effort, and `--thinking disabled` does
+not change that. That thinking is the bulk of the output and of the time: about 165 s per batch of
+10.
 
 ## Local models (vLLM, Ollama)
 
@@ -171,8 +188,8 @@ aggressive, with `source = screen`.
 
   It judges both directions and answers in a JSON schema (aggressive, kind, a reason with numbers,
   confidence; agreement with the screens; whether it wants a second look).
-- **Critic** looks again where the reviewer overruled the screens, gave low confidence or asked for
-  a second look. It is told to make the strongest honest case against the reviewer, then give the
+- **Critic** looks again where the reviewer overruled the screens (with `--critic unsure`, also
+  where it gave low confidence or asked for a second look). It is told to make the strongest honest case against the reviewer, then give the
   final verdict. Its verdict is final (`source = critic`).
 - **Rule auditor** (`propose`) has read-only file tools on the skill and the run folder. It writes
   proposals to `rule_proposals.md`: the change (file, function), the scenes it explains, what it

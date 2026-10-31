@@ -19,6 +19,7 @@ from pathlib import Path
 from claude_agent_sdk import (AssistantMessage, ClaudeAgentOptions, HookMatcher, ResultMessage, SystemMessage,
                               TextBlock, ToolUseBlock, create_sdk_mcp_server, query, tool)
 
+import scene_tools as T
 import spec
 from spec import rules_text  # noqa: F401  (the pipeline reads the rules through the backend)
 
@@ -71,12 +72,16 @@ async def _run(prompt, options):
             "is_error": getattr(result, "is_error", None), "errors": getattr(result, "errors", None),
             "terminal_reason": getattr(result, "terminal_reason", None), "init": init,
             "cost_usd": getattr(result, "total_cost_usd", None) or 0.0,
-            "turns": getattr(result, "num_turns", None), "tool_calls": calls, "text": texts,
+            "turns": getattr(result, "num_turns", None), "usage": getattr(result, "usage", None),
+            "duration_ms": getattr(result, "duration_ms", None), "tool_calls": calls, "text": texts,
             "result_text": getattr(result, "result", None)}
 
 
 # The agents must not see the user's memory (it holds notes about earlier labels) or any connector.
 ISOLATED_ENV = {"CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"}
+
+
+EFFORT = None  # set by the pipeline (--effort): how hard the models think; low keeps thinking short
 
 
 def _options(scene, system, model, fig_dir, schema, budget, max_turns):
@@ -93,19 +98,54 @@ def _options(scene, system, model, fig_dir, schema, budget, max_turns):
         setting_sources=[],  # no user or project settings, CLAUDE.md or memory: a clean, blind reviewer
         max_turns=max_turns,
         max_budget_usd=budget,
+        effort=EFFORT,
         output_format={"type": "json_schema", "schema": schema},
     )
 
 
+def _batch_options(system, model, schema, budget):
+    """A batch has no tools at all: one answer in the schema (the structured-output call is its only turn)."""
+    return ClaudeAgentOptions(system_prompt=system, model=model, strict_mcp_config=True, env=ISOLATED_ENV,
+                              tools=[], allowed_tools=[], permission_mode="dontAsk", setting_sources=[],
+                              max_turns=8, max_budget_usd=budget, effort=EFFORT,
+                              output_format={"type": "json_schema", "schema": schema})
+
+
+def _with_figure(name, text, fig_dir):
+    """The first message as one user turn: the default figure and the brief, so the agent starts with
+    what it would otherwise spend three tool calls on."""
+    png = T.render(name, out_dir=fig_dir)
+
+    async def messages():
+        yield {"type": "user", "session_id": "", "parent_tool_use_id": None,
+               "message": {"role": "user", "content": [
+                   {"type": "image", "source": {"type": "base64", "media_type": "image/png",
+                                                "data": base64.b64encode(png).decode()}},
+                   {"type": "text", "text": text}]}}
+    return messages()
+
+
 async def review(name, rules, model, fig_dir, budget=1.0, max_turns=24):
-    return await _run(spec.review_prompt(name),
+    return await _run(_with_figure(name, spec.review_prompt(name, figure=True), fig_dir),
                       _options(name, spec.REVIEWER.format(rules=rules), model, fig_dir, spec.VERDICT, budget, max_turns))
 
 
 async def criticise(name, first_verdict, rules, model, fig_dir, budget=1.5, max_turns=24):
-    return await _run(spec.critic_prompt(name, first_verdict),
+    return await _run(_with_figure(name, spec.critic_prompt(name, first_verdict, figure=True), fig_dir),
                       _options(name, spec.CRITIC.format(rules=rules), model, fig_dir, spec.CRITIC_VERDICT, budget,
                                max_turns))
+
+
+async def review_batch(names, rules, model, budget=1.0):
+    return await _run(spec.batch_review_prompt(names),
+                      _batch_options(spec.REVIEWER_BATCH.format(rules=rules), model, spec.batch_schema(spec.VERDICT),
+                                     budget * len(names)))
+
+
+async def criticise_batch(items, rules, model, budget=1.5):
+    return await _run(spec.batch_critic_prompt(items),
+                      _batch_options(spec.CRITIC_BATCH.format(rules=rules), model,
+                                     spec.batch_schema(spec.CRITIC_VERDICT), budget * len(items)))
 
 
 def _inside(roots):

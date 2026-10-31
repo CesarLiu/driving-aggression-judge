@@ -134,8 +134,9 @@ Judge the first toward the second and the second toward the first, ignoring how 
 parties. Check every claim against the numbers and the figure: who actually moved, who arrived
 first, whether the other paid for it (was made to stop again, braked hard, was cut close, was left a
 headway it had no say in). A third road user may explain a brake or a lane change; look before you
-blame. Be economical: a typical scene needs the overview, one or two figures and one or two time
-series windows.
+blame. The first message already holds the scene overview, the pair's time series every 0.5 s
+and, where the model takes images, the default figure: that settles most scenes. Call a tool only
+for what they cannot show (a third road user, a finer time window, a zoomed figure).
 
 Answer in the JSON schema. Each reason is one English sentence naming the deciding rule with its
 numbers (times, headways, braking, speeds). Use "low" confidence when the data cannot settle it
@@ -148,8 +149,9 @@ or overrule the screens.
 """
 
 CRITIC = """You are the second reviewer for driving-aggression verdicts on Waymo Open Motion Dataset
-scenes. A first reviewer has judged a scene; it disagreed with the automatic screens or was unsure.
-Look at the scene yourself with the tools, then make the strongest honest case against the first
+scenes. A first reviewer has judged a scene and disagreed with the automatic screens (or was unsure).
+Look at the scene yourself (the first message holds the overview, the time series and, where the
+model takes images, the figure; the tools show more), then make the strongest honest case against the first
 reviewer's verdict: wrong actor, misread geometry, a third party that explains it, a lawful
 manoeuvre called aggressive, or a real cost to the other road user that was waved away. Then give
 the final verdict in the JSON schema (upheld = the first reviewer's verdict stands on both sides).
@@ -171,14 +173,59 @@ you propose is applied without a person's approval; do not edit files.
 """
 
 
-def review_prompt(name):
-    return ("Judge scene %s. Start with scene_overview, then look at the figure and the time series around the "
-            "moments that matter, and give your verdict." % name)
+def brief(name, figure=False):
+    """What a scene agent is given up front, so it need not spend turns asking for it: the overview
+    (the screens' rows and the triage reason included) and the time series every 0.5 s. ``figure``:
+    True (a figure is attached), False (the agent has the tools) or None (batch: neither)."""
+    note = {True: "\n\nThe attached image is render_scene with its default marks.",
+            False: "\n\nNo figure yet: call render_scene if the geometry matters.", None: ""}[figure]
+    return "# scene_overview\n\n%s\n\n# pair_timeseries, 0-9 s every 0.5 s\n\n%s%s" % (
+        T.overview(name), T.timeseries(name, 0.0, 9.0, 0.5), note)
 
 
-def critic_prompt(name, first_verdict):
-    return ("Scene %s. The first reviewer's verdict:\n```json\n%s\n```\nCheck it with the tools and give the final "
-            "verdict." % (name, json.dumps(first_verdict, indent=1, ensure_ascii=False)))
+def review_prompt(name, figure=False):
+    return "Judge scene %s.\n\n%s\n\nGive your verdict." % (name, brief(name, figure))
+
+
+def critic_prompt(name, first_verdict, figure=False):
+    return ("Scene %s. The first reviewer's verdict:\n```json\n%s\n```\n\n%s\n\nCheck it and give the final "
+            "verdict." % (name, json.dumps(first_verdict, indent=1, ensure_ascii=False), brief(name, figure)))
+
+
+# --- batches: several scenes in one request, text only, no tools -------------------------------
+
+_TOOLS_NOTE = """The first message already holds the scene overview, the pair's time series every 0.5 s
+and, where the model takes images, the default figure: that settles most scenes. Call a tool only
+for what they cannot show (a third road user, a finer time window, a zoomed figure)."""
+_BATCH_NOTE = """The message holds several scenes, each with its overview and the pair's time series
+every 0.5 s; there are no tools and no figures. Judge each scene on its own. Where the numbers
+cannot settle a scene, say so with low confidence rather than guess."""
+assert _TOOLS_NOTE in REVIEWER
+REVIEWER_BATCH = REVIEWER.replace(_TOOLS_NOTE, _BATCH_NOTE)
+_CRITIC_TOOLS = """(the first message holds the overview, the time series and, where the
+model takes images, the figure; the tools show more)"""
+assert _CRITIC_TOOLS in CRITIC
+CRITIC_BATCH = CRITIC.replace(_CRITIC_TOOLS, "(each scene's overview and time series are given; there are no tools)")
+
+
+def batch_schema(verdict):
+    one = dict(verdict, properties=dict(verdict["properties"], scene={"type": "string"}),
+               required=["scene"] + verdict["required"])
+    return {"type": "object", "properties": {"verdicts": {"type": "array", "items": one}},
+            "required": ["verdicts"], "additionalProperties": False}
+
+
+def batch_review_prompt(names):
+    return ("Judge each of these %d scenes and return one verdict per scene, with its scene id, in the order given."
+            "\n\n%s" % (len(names), "\n\n".join("## Scene %s\n\n%s" % (n, brief(n, None)) for n in names)))
+
+
+def batch_critic_prompt(items):
+    """``items``: (scene, first reviewer's verdict) pairs."""
+    return ("Check the first reviewer's verdict on each of these %d scenes and return one final verdict per scene, "
+            "with its scene id, in the order given.\n\n%s" % (len(items), "\n\n".join(
+                "## Scene %s\n\nThe first reviewer's verdict:\n```json\n%s\n```\n\n%s" % (
+                    n, json.dumps(v, indent=1, ensure_ascii=False), brief(n, None)) for n, v in items)))
 
 
 def audit_prompt(run_dir):

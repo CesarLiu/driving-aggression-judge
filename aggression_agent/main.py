@@ -54,9 +54,15 @@ def main():
     r.add_argument("--no-blind-spot-scan", action="store_true",
                    help="skip the scan for side-by-side cars that end up in one lane (loads every scene)")
     r.add_argument("--max-review", type=int, help="review at most this many triaged scenes")
-    r.add_argument("--concurrency", type=int, default=3, help="scenes reviewed at once")
-    r.add_argument("--critic", default="disagree", choices=("disagree", "all", "none"),
-                   help="when the critic looks again: when the reviewer overruled the screens or was unsure (default)")
+    r.add_argument("--concurrency", type=int, default=3, help="scenes (with --batch: requests) reviewed at once")
+    r.add_argument("--batch", type=int, default=10,
+                   help="scenes per request, text only and without tools (claude backend); 1: one agent per scene "
+                        "with the scene tools and a figure")
+    r.add_argument("--effort", default="low", choices=("low", "medium", "high"),
+                   help="how hard the models think (claude backend); low keeps the thinking short")
+    r.add_argument("--critic", default="disagree", choices=("disagree", "unsure", "all", "none"),
+                   help="when the critic looks again: when the reviewer overruled the screens (default); unsure: "
+                        "also when it was unsure or asked for a second look")
     r.add_argument("--reviewer-model", help="default claude-haiku-5-5 (claude backend); required with openai")
     r.add_argument("--critic-model", help="default claude-sonnet-5-5 (claude backend); default the reviewer model with openai")
     r.add_argument("--budget", type=float, default=1.0, help="USD cap per reviewer run (critic: 1.5x; claude backend only)")
