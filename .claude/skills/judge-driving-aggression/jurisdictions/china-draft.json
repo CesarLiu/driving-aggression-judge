@@ -37,5 +37,30 @@
       "right"
     ],
     "stop_first": false
+  },
+  "vru": {
+    "crosswalk": "on",
+    "unmarked_crosswalk_at_intersection": false,
+    "unsignalised_road": "yield",
+    "sidewalk_crossing": "care",
+    "turning_yields_to_pedestrians": true,
+    "turning_yields_to_cyclists": true,
+    "passing_m": {
+      "cyclist": [
+        null,
+        null
+      ],
+      "pedestrian": [
+        null,
+        null
+      ]
+    },
+    "notes": [
+      "Road Traffic Safety Law (2021) art. 47(1): passing a crosswalk, slow down; when a pedestrian is crossing on it, stop and give way. Supreme People's Court Guiding Case No. 90 (Bei Huifeng v. Haining traffic police): a pedestrian walking or staying on the crosswalk is given way to, unless the pedestrian clearly signals the vehicle to go first; whether one is crossing is read from the pedestrian's behaviour over a span of time (crosswalk 'on').",
+      "Art. 47(2): on a road without traffic signals, when a pedestrian crosses the road, the vehicle avoids them (unsignalised_road 'yield': a duty to give way even off a crosswalk). Art. 62: the pedestrian crosses where there is no crosswalk only after making sure it is safe.",
+      "Implementing Regulations art. 38(1)(1): on green, turning vehicles must not obstruct released straight-on vehicles and pedestrians (turning_yields_to_pedestrians, turning_yields_to_cyclists: non-motor vehicles are vehicles). Art. 38(3): where a junction has no pedestrian or non-motor signals, pedestrians and non-motor vehicles follow the motor-vehicle lights.",
+      "No statutory lateral distance for overtaking a cyclist or pedestrian (art. 43; regulations art. 47 speak only of a sufficient safe distance): passing_m null, the screen's physical fallback applies.",
+      "Driving across a sidewalk out of private ground: no specific article was found (sidewalk_crossing 'care')."
+    ]
   }
 }

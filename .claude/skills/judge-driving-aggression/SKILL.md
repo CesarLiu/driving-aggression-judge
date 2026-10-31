@@ -1,6 +1,6 @@
 ---
 name: judge-driving-aggression
-description: Decide whether an agent's driving toward another agent is aggressive in WOMD-style scenes (Waymo Open Motion Dataset as ScenarioNet scene files or catk/SMART womd_cache pickles), judging crossing and turning conflicts at intersections by the traffic law of a chosen country or region, and cut-ins, tailgating and close passes by physical rules. Use this whenever the user wants to label, audit or score aggressive driving of the SDC or objects of interest in motion-prediction or driving-log scenes, check or explain human aggression labels, find who violated the right of way, or adapt the aggression criteria to another country (left-hand traffic, China, Germany, other traffic codes), even if they only say "is the SDC aggressive here", "who had the right of way", or "label these scenes".
+description: Decide whether an agent's driving toward another agent is aggressive in WOMD-style scenes (Waymo Open Motion Dataset as ScenarioNet scene files or catk/SMART womd_cache pickles), judging crossing and turning conflicts at intersections, and the vehicle's conduct toward pedestrians and cyclists (crosswalks, turns, overtaking distance), by the traffic law of a chosen country or region, and cut-ins, tailgating and close passes by physical rules. Use this whenever the user wants to label, audit or score aggressive driving of the SDC or objects of interest in motion-prediction or driving-log scenes, check or explain human aggression labels, find who violated the right of way, check whether a car yielded to pedestrians or passed cyclists too close, or adapt the aggression criteria to another country (left-hand traffic, China, Germany, other traffic codes), even if they only say "is the SDC aggressive here", "who had the right of way", or "label these scenes".
 ---
 
 # Judging aggressive driving in WOMD-style scenes
@@ -86,6 +86,41 @@ vehicle something; and labels made by people who do not know the traffic rules c
    lane the other car is in at that moment; who moved, by each car's change of offset from its own
    lane.
 
+   **Screen pedestrians and cyclists.**
+
+   ```bash
+   python scripts/screen_vru.py --scenes <folder-or-file> --profile us-california --in-town --out vru.csv
+   ```
+
+   `--in-town` is for WOMD (all US cities). Without it, a lane speed limit above 50 km/h counts as
+   outside town, which picks the larger German passing distance.
+
+   WOMD rarely marks a vehicle together with a VRU as the pair of interest, so this screen does
+   not use the pair. For each vehicle screened (`--vehicles sdc`, the default; or `ooi`, `all`), it
+   looks at every pedestrian and cyclist within 15 m. It writes one row per vehicle and VRU, per
+   event:
+   - **`crossing`**: the VRU entered the vehicle's swept path. The profile's `vru` block
+     (`references/jurisdictions.md`) gives the `duty` and its `rule`. It decides from `where` (a
+     marked crosswalk, a junction, mid-block, off the road), the VRU's state when the vehicle
+     arrived (`vru_state`: on the crosswalk or carriageway, waiting at its edge), the vehicle's
+     light and whether it had turned.
+     - `violation`: the vehicle owed the way and went first.
+     - `aggressive_candidate`: the violation cost the VRU something. `affected_by` says what:
+       `vru_waited`, `vru_slowed`, `cut_close` (within `--close-pet`, 1 s), or `passed_within_1.5m`.
+     - A cyclist crossing like a vehicle is judged by the vehicle rules (`row_*` columns).
+     - `endangered`: no duty, but the vehicle drove at 3 m/s or more within 1 s or 0.5 m of a VRU
+       already on the carriageway.
+   - **`passing`**: the vehicle overtook a VRU moving its way. `passing_gap_m` (box to box) is
+     compared with `passing_required_m`; a shortfall is a `close_pass`.
+
+   Candidates need the VRU seen for 2 s or more (`short_vru_track`). A VRU that stepped out when
+   the vehicle could no longer stop (`stepped_out_late`) is not the vehicle's fault. Pedestrian
+   signals and kerbs are not on the maps; read the `flags` before trusting a row.
+   - `vru_off_carriageway` on a close pass: the VRU was more than 2 m from a road lane, in a bike
+     lane (not in the lane graph) or on a sidewalk. Whether passing it counts as overtaking is for
+     review.
+   - `same_event_as=<scenes>`: the same recording cut twice. Count it once.
+
 4. **Optionally, get a second opinion from the judge** (`references/judge.md`). Use it when the
    user wants a verdict with a measured cost, when a dataset is too large to review every scene,
    or to check the screens' blind spots. Calibrate on the dataset being judged, or on a larger one
@@ -166,7 +201,8 @@ vehicle something; and labels made by people who do not know the traffic rules c
 
 - `scripts/judge.py`: the duty x cost x attribution judge of step 4 (`python scripts/judge.py
   self-test` checks it).
-- `scripts/screen_crossing.py` and `scripts/screen_same_direction.py`: the two screens.
+- `scripts/screen_crossing.py`, `scripts/screen_same_direction.py` and `scripts/screen_vru.py`: the
+  screens (vehicle crossings, same-direction traffic, pedestrians and cyclists).
   `scripts/scenes.py`: scene loading (ScenarioNet and catk cache) and pair choice.
   `scripts/jurisdiction.py`: the profile engine (`python scripts/jurisdiction.py` self-tests it).
   `scripts/responsibility/`: code from the CAT fork. It holds the scene, lane-graph and

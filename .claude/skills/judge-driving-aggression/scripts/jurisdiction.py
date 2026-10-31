@@ -5,7 +5,8 @@ intersection without a working signal, and optionally (``green_rules``) between 
 both have a circular green. ``decide`` applies one to two approaches (anything with
 ``.control``, ``.turn``, ``.heading``, ``.arrived``, ``.entered``, ``.through``, as
 ``responsibility.right_of_way.Approach`` has). It has no dependency on the scene code, so it can
-be tested on its own (``python jurisdiction.py`` runs the self-test).
+be tested on its own (``python jurisdiction.py`` runs the self-test). ``vru_duty`` and
+``passing_distance`` read the profile's ``vru`` block for pedestrians and cyclists (screen_vru.py).
 
 Conventions, all relative to each vehicle's own driving direction so that left- and right-hand
 traffic need no special case:
@@ -217,6 +218,67 @@ def red_entry(profile, approach, stopped):
     return "lawful_turn_on_red"
 
 
+ARROW, UNKNOWN = "arrow", "unknown"
+PASSING_FALLBACK = 1.0  # m: a physical rule where the law gives no lateral distance (not law)
+
+
+def vru_duty(profile, vru_type, where, state, control, turning, cyclist="crossing", stepped_out_late=False):
+    """(duty, rule): what a vehicle owed a pedestrian or cyclist whose path it crossed, under the
+    profile's ``vru`` block.
+
+    ``duty`` is "yield" (the VRU had priority), "care" (no priority, but the driver keeps due care)
+    or "vehicle_rules" (a cyclist crossing like a vehicle: right_of_way.py and ``decide`` judge it).
+
+    ``where``: "crosswalk" (a marked one), "intersection" (at a junction without markings), "road"
+    or "off_road" (a driveway or car park: the vehicle crosses a sidewalk). ``state``: the VRU when
+    the vehicle reached the conflict: "on" (on the crosswalk, or on the carriageway), "waiting" (at
+    the edge of the crosswalk, about to cross) or "". ``control``: the vehicle's control
+    (right_of_way.py's go / arrow / red / stop / none / unknown). ``turning``: the vehicle had turned
+    and the conflict lies on the road it turned into. ``cyclist``: for a cyclist, its direction
+    against the vehicle's approach ("same_direction", "oncoming", "crossing").
+    ``stepped_out_late``: the VRU stepped into the path when the vehicle could no longer stop.
+    """
+    v = profile.get("vru") or {}
+    if vru_type == "CYCLIST":
+        if turning and cyclist in ("same_direction", "oncoming") and v.get("turning_yields_to_cyclists"):
+            return "yield", "turning_across_cyclist"
+        return "vehicle_rules", "cyclist_crossing"
+    if stepped_out_late:
+        return "care", "stepped_out_late"
+    allowed = ("on", "waiting") if where == "crosswalk" and v.get("crosswalk") == "on_or_waiting" else ("on",)
+    if state not in allowed:
+        return "care", "not_crossing_yet"
+    if control == UNKNOWN:
+        return "care", "signal_unknown"
+    if control == RED:  # a pedestrian crossing in front of a red light has the green (or crosses lawfully)
+        return "yield", "vehicle_on_red"
+    if control == ARROW:  # a protected turn: the pedestrians it crosses face a red
+        return "care", "green_arrow"
+    if control == GO:
+        if turning and v.get("turning_yields_to_pedestrians"):
+            return "yield", "turning_on_green"
+        return "care", "straight_on_green"
+    if where == "off_road":
+        return v.get("sidewalk_crossing", "care"), "sidewalk_crossing"
+    if where == "crosswalk":
+        return "yield", "crosswalk"
+    if turning and v.get("turning_yields_to_pedestrians"):
+        return "yield", "turning"
+    if where == "intersection" and v.get("unmarked_crosswalk_at_intersection"):
+        return "yield", "unmarked_crosswalk"
+    if v.get("unsignalised_road") == "yield":
+        return "yield", "unsignalised_road"
+    return "care", "outside_crosswalk"
+
+
+def passing_distance(profile, vru_type, rural):
+    """(metres, statutory): the lateral distance required when overtaking a pedestrian or cyclist;
+    PASSING_FALLBACK, statutory False, where the profile gives none."""
+    pair = ((profile.get("vru") or {}).get("passing_m") or {}).get(vru_type.lower())
+    m = pair[1 if rural else 0] if pair else None
+    return (PASSING_FALLBACK, False) if m is None else (float(m), True)
+
+
 def _self_test():
     from types import SimpleNamespace as N
 
@@ -305,6 +367,35 @@ def _self_test():
     assert red_entry(cn, red("right", RED_ARROW), True) == "ran_red_arrow"
     assert red_entry(lh, red("left"), True) == "lawful_turn_on_red"
     assert red_entry(us, N(control=GO, signal="LANE_STATE_GO", turn="left", entered=30), None) == ""
+    # pedestrians: on a marked crosswalk without a light every profile yields to one on it, only
+    # Germany also to one waiting at its edge (StVO 26(1) "erkennbar benutzen wollen")
+    for p in (us, de, cn):
+        assert vru_duty(p, "PEDESTRIAN", "crosswalk", "on", NONE, False) == ("yield", "crosswalk")
+    assert vru_duty(de, "PEDESTRIAN", "crosswalk", "waiting", NONE, False) == ("yield", "crosswalk")
+    assert vru_duty(us, "PEDESTRIAN", "crosswalk", "waiting", NONE, False)[0] == "care"
+    # crossing mid-block without a signal: only China gives way (RTSL 47(2)); at a junction without
+    # markings California yields (unmarked crosswalk, CVC 21950(a)), Germany only when turning
+    assert [vru_duty(p, "PEDESTRIAN", "road", "on", NONE, False)[0] for p in (us, de, cn)] == ["care", "care", "yield"]
+    assert [vru_duty(p, "PEDESTRIAN", "intersection", "on", STOP, False)[0] for p in (us, de, cn)] == ["yield", "care", "yield"]
+    assert vru_duty(de, "PEDESTRIAN", "intersection", "on", NONE, True) == ("yield", "turning")
+    # on green a turner yields to pedestrians crossing the road it turns into; straight on, or on a
+    # green arrow, only due care; a vehicle on red yields; a pedestrian not yet crossing is owed care
+    for p in (us, de, cn):
+        assert vru_duty(p, "PEDESTRIAN", "crosswalk", "on", GO, True) == ("yield", "turning_on_green")
+        assert vru_duty(p, "PEDESTRIAN", "crosswalk", "on", GO, False)[0] == "care"
+        assert vru_duty(p, "PEDESTRIAN", "crosswalk", "on", ARROW, True)[0] == "care"
+        assert vru_duty(p, "PEDESTRIAN", "crosswalk", "on", RED, True) == ("yield", "vehicle_on_red")
+        assert vru_duty(p, "PEDESTRIAN", "crosswalk", "", NONE, False) == ("care", "not_crossing_yet")
+        assert vru_duty(p, "PEDESTRIAN", "crosswalk", "on", NONE, False, stepped_out_late=True)[0] == "care"
+    # cyclists: a turner yields to one going straight beside it or oncoming; other crossings are
+    # vehicle against vehicle
+    assert vru_duty(de, "CYCLIST", "road", "on", GO, True, "same_direction") == ("yield", "turning_across_cyclist")
+    assert vru_duty(us, "CYCLIST", "road", "on", NONE, False, "crossing")[0] == "vehicle_rules"
+    # passing: 3 ft for a cyclist in California, 1.5 / 2 m in Germany, none in China
+    assert passing_distance(us, "CYCLIST", False) == (0.91, True)
+    assert passing_distance(de, "PEDESTRIAN", True) == (2.0, True)
+    assert passing_distance(cn, "CYCLIST", False) == (PASSING_FALLBACK, False)
+    assert passing_distance(us, "PEDESTRIAN", False) == (PASSING_FALLBACK, False)
     print("jurisdiction self-test passed; profiles:", ", ".join(list_profiles()))
 
 

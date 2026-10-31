@@ -25,5 +25,31 @@
       "left"
     ],
     "stop_first": true
+  },
+  "vru": {
+    "crosswalk": "on",
+    "unmarked_crosswalk_at_intersection": true,
+    "unsignalised_road": "care",
+    "sidewalk_crossing": "yield",
+    "turning_yields_to_pedestrians": true,
+    "turning_yields_to_cyclists": true,
+    "passing_m": {
+      "cyclist": [
+        0.91,
+        0.91
+      ],
+      "pedestrian": [
+        null,
+        null
+      ]
+    },
+    "notes": [
+      "CVC 21950(a): yield to a pedestrian crossing within a marked crosswalk, or an unmarked crosswalk at an intersection (crosswalk 'on', unmarked_crosswalk_at_intersection). 21950(b): a pedestrian may not suddenly leave the curb into the path of a vehicle too close to stop (the screen's stepped_out_late). 21950(c), (d): due care toward any pedestrian in a crosswalk.",
+      "CVC 21954(a), (b): elsewhere on the roadway the pedestrian yields to vehicles close enough to be an immediate hazard, and the driver keeps due care (unsignalised_road 'care').",
+      "CVC 21451(a): on a circular green, a driver, including one turning, yields to pedestrians lawfully within the intersection or an adjacent crosswalk; on a green arrow (21451(b)) crossing pedestrians face a red, so only due care. 21453(b): a turn on red yields to pedestrians lawfully within an adjacent crosswalk.",
+      "CVC 21952: before driving over or upon a sidewalk (a driveway), yield to any pedestrian approaching on it (sidewalk_crossing).",
+      "Turning across a cyclist going straight (a right hook, or a left turn across an oncoming cyclist): a cyclist has the rights of a driver (CVC 21200), so 21451(a) and 21801(a) give it priority over the turner.",
+      "CVC 21760(c) (Three Feet for Safety Act): do not overtake a bicycle closer than 3 ft (0.91 m) between any part of the vehicle and any part of the bicycle or its rider; change lanes first where another lane is available (not checked); 21760(d): where 3 ft is impossible, pass slowly and only when it does not endanger the cyclist. No statutory distance for pedestrians (null: the screen's physical fallback)."
+    ]
   }
 }

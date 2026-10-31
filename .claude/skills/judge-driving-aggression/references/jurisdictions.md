@@ -20,6 +20,12 @@ mirror of the California one.
   official gazette);
 - Germany: the StVO on gesetze-im-internet.de.
 
+The `vru` blocks (pedestrians and cyclists) were checked on 2026-10-31 against CVC 21451(a), 21453(b),
+21950, 21952, 21954 and 21760 (california.public.law); StVO §§ 5(4), 9(3), 10, 25(3) and 26
+(gesetze-im-internet.de); and the Road Traffic Safety Law as amended in 2021, arts. 43, 47 and 62,
+its Implementing Regulations arts. 38 and 47 (zh.wikisource.org), and the Supreme People's Court's
+Guiding Case No. 90 (court.gov.cn).
+
 What the law leaves open is marked as an interpretation in the profile's `notes`.
 
 Draft profiles print a warning and their results must not be reported as findings until someone
@@ -62,10 +68,65 @@ who knows the local traffic code has read the profile and a few labelled scenes 
   not by the profile. In all three countries the vehicle on red, or entering from private ground,
   yields.
 
+## Pedestrians and cyclists (`vru`, read by `scripts/screen_vru.py`)
+
+```json
+"vru": {
+  "crosswalk": "on",
+  "unmarked_crosswalk_at_intersection": true,
+  "unsignalised_road": "care",
+  "sidewalk_crossing": "yield",
+  "turning_yields_to_pedestrians": true,
+  "turning_yields_to_cyclists": true,
+  "passing_m": {"cyclist": [0.91, 0.91], "pedestrian": [null, null]},
+  "notes": ["..."]
+}
+```
+
+`jurisdiction.vru_duty` turns these into the vehicle's duty toward a VRU whose path it crossed:
+`yield` (the VRU had priority), `care` (no priority, but due care) or `vehicle_rules` (a cyclist
+crossing like a vehicle, judged by the vehicle rules above). In order:
+
+1. A cyclist: `yield` if the vehicle had turned and the cyclist went straight beside it or
+   oncoming (`turning_yields_to_cyclists`), else `vehicle_rules`.
+2. A pedestrian who stepped out when the vehicle could no longer stop: `care`.
+3. A pedestrian not yet crossing when the vehicle reached the conflict: `care`. Crossing means on
+   the crosswalk, or on the carriageway; with `crosswalk` `"on_or_waiting"` also waiting at the
+   crosswalk's edge.
+4. The vehicle's light. Unknown: `care`. Red: `yield`. A green arrow: `care` (a protected turn: the
+   pedestrians it crosses face a red). Circular green: `yield` if the vehicle turned into the road
+   the pedestrian crosses (`turning_yields_to_pedestrians`), else `care`.
+5. Without a light:
+   - off the road (a driveway): `sidewalk_crossing`;
+   - on a marked crosswalk: `yield`;
+   - the vehicle turned into the road crossed (`turning_yields_to_pedestrians`): `yield`;
+   - at a junction without markings: `yield` if `unmarked_crosswalk_at_intersection`;
+   - elsewhere: `unsignalised_road`.
+
+`passing_m` gives the lateral distance for overtaking a cyclist or pedestrian, `[in town, outside
+town]`; the screen takes a lane speed limit above 50 km/h as outside town. `null` means the law
+names no distance: the screen then applies a 1 m physical fallback and flags it
+`no_statutory_distance`.
+
+| situation | California | Germany | China |
+|---|---|---|---|
+| pedestrian on a crosswalk without a light | yield (CVC 21950(a)) | yield (§ 26(1)) | stop and yield (RTSL 47(1)) |
+| pedestrian waiting at that crosswalk's edge | care | yield ("erkennbar benutzen wollen", § 26(1)) | care; staying on the crosswalk counts as on it (Guiding Case 90) |
+| pedestrian crossing at a junction without markings | yield (unmarked crosswalk, 21950(a)) | care, yield if the vehicle turns (§ 9(3)) | yield where there is no signal (RTSL 47(2)) |
+| pedestrian crossing mid-block, no signal | care (21954) | care (§ 25(3)) | yield (RTSL 47(2)) |
+| turning on green across a crossing pedestrian | yield (21451(a)) | yield (§ 9(3)) | yield (reg. 38(1)(1)) |
+| turning across a cyclist going straight | yield (21451(a), 21801(a); cyclists are drivers, 21200) | yield (§ 9(3)) | yield (reg. 38(1)(1)) |
+| leaving a driveway across the sidewalk | yield (21952) | yield (§ 10) | no specific article: care |
+| overtaking a cyclist | 3 ft = 0.91 m; change lanes if another is free (21760(c), not checked) | 1.5 m in town, 2 m outside (§ 5(4)) | no distance: fallback |
+| overtaking a pedestrian | no distance: fallback | 1.5 m / 2 m (§ 5(4)) | no distance: fallback |
+
+What the maps cannot show: whether a crosswalk is a zebra (Germany: one without a light is taken to
+be), pedestrian signals (inferred from the vehicle's light and whether it turned), kerbs (the
+carriageway is within 2 m of a lane centreline), and whether a pedestrian waved the car on (China's
+exception in Guiding Case 90).
+
 ## Rules (ordered lists; the first that names a holder wins)
 
-| rule | meaning |
-|---|---|
 | rule | meaning | sources |
 |---|---|---|
 | `oncoming_left_yields` | a left or U-turner yields to oncoming traffic, straight on or turning right; two oncoming left turners: no holder | CVC 21801(a), 21800(e)(3); StVO § 9(3), (4) |
@@ -94,8 +155,8 @@ profile needs no coordinate flip.
 
 1. Copy the closest profile, give it a new `id` and set `status` to a string starting with
    `draft`.
-2. Write the statute's rules into `all_way_stop`, `uncontrolled_rules` and `t_junction`, citing the
-   article in `notes`. If you need a rule that is not in the table, add a function to
+2. Write the statute's rules into `all_way_stop`, `uncontrolled_rules` and `t_junction`, and the
+   pedestrian and cyclist rules into `vru`, citing the article in `notes`. If you need a rule that is not in the table, add a function to
    `scripts/jurisdiction.py` (signature `(a, b, rel) -> "a" | "b" | None`) and register it in
    `RULES`.
 3. Run `python scripts/jurisdiction.py`. Then screen a few dozen scenes from that country, look at

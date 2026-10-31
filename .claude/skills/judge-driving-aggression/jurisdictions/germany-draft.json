@@ -34,5 +34,30 @@
     ],
     "stop_first": true,
     "sign_required": true
+  },
+  "vru": {
+    "crosswalk": "on_or_waiting",
+    "unmarked_crosswalk_at_intersection": false,
+    "unsignalised_road": "care",
+    "sidewalk_crossing": "yield",
+    "turning_yields_to_pedestrians": true,
+    "turning_yields_to_cyclists": true,
+    "passing_m": {
+      "cyclist": [
+        1.5,
+        2.0
+      ],
+      "pedestrian": [
+        1.5,
+        2.0
+      ]
+    },
+    "notes": [
+      "§ 26(1): at a Fußgängerüberweg (zebra crossing, sign 293) vehicles let pedestrians who are on it or recognisably want to use it cross; approach at moderate speed and wait if needed (crosswalk 'on_or_waiting'). WOMD maps do not tell zebra from signalised crossings: a crosswalk without a light is taken to be a zebra. § 26(3): no overtaking at crossings (not checked).",
+      "§ 9(3) sentence 3: a turning driver takes special care of pedestrians and waits if needed (turning_yields_to_pedestrians). § 9(3) sentence 1: a turning driver lets oncoming vehicles pass, and cyclists also when they ride in the same direction on or beside the road (turning_yields_to_cyclists).",
+      "§ 25(3): pedestrians cross the road taking care of the traffic, at junctions, lights or crossings where traffic requires it. A pedestrian crossing elsewhere has no priority, the driver keeps due care (§ 1(2); unsignalised_road 'care'). The StVO has no unmarked crosswalk.",
+      "§ 10: entering the road from private ground or over a lowered kerb, a driver must rule out endangering other road users (sidewalk_crossing 'yield').",
+      "§ 5(4): overtaking pedestrians, cyclists or e-scooter riders with a motor vehicle, the lateral distance is at least 1.5 m in town (innerorts) and 2 m outside; the screen takes a lane speed limit above 50 km/h as outside town (passing_m [urban, rural])."
+    ]
   }
 }
