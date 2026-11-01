@@ -11,8 +11,14 @@ Three kinds of conflict, each with its own reading of "who caused it":
   crossing   the paths cross or merge and the right of way (right_of_way.py, judged at the first
              crossing of the whole tracks as forced_yield.pair_priority does) names a holder. The
              actor is the yielder if it entered its conflict zone first; nobody if the holder did.
-             Without a holder the actor is unknown: who moved does not decide a crossing.
-  join       the two travel the same way side by side and then one is in the other's path ahead of
+             Without a holder the actor is unknown: who moved does not decide a crossing. Tracks
+             that never cross or merge (pair_priority judges them at their closest approach) are
+             no crossing, as in screen_crossing.py's paths-do-not-cross: their conflict zones are
+             drawn around the closest approach, so two cars passing each other a lane apart are
+             both inside them at once and forced_yield reads that as an infinite demand. On 11,452
+             WOMD validation scenes such pairs were 34 of the 62 aggressive crossings, 29 of them
+             infinite; in none of those 29 did the other brake.
+  join      the two travel the same way side by side and then one is in the other's path ahead of
              it: one or both moved over. Each agent's sideways movement is the integral of its
              speed times the sine of its course against the road's local direction at its own
              position: the median direction of the lane centrelines and road edges within
@@ -212,6 +218,8 @@ def crossing(scene: Scene, agent: int, other: int, params: Optional[RightOfWayPa
     p = params or RightOfWayParams()
     prio = pair_priority(scene, agent, other, params=p)
     if prio is None or prio.conflict is None or prio.approaches is None or prio.case in ("same-direction", "following"):
+        return None
+    if prio.conflict.kind == "closest":  # the paths never cross or merge (module docstring)
         return None
     if prio.holder is None:
         return Attribution("crossing", "unknown", "no-holder", evidence={"case": prio.case, "holder": "none"})
