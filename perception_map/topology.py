@@ -15,10 +15,12 @@ speed limits. ``rebuild`` then restores:
 
 ``score`` compares a rebuilt map with WOMD's junction lanes (movements found, false ones, centreline
 error), and ``screen`` runs the right-of-way screen on rebuilt maps with WOMD's controls moved onto
-the rebuilt connectors, which isolates what the topology costs.
+the rebuilt connectors, which isolates what the topology costs. ``run`` does both with one rebuild
+per scene (``score`` and ``screen`` do one each); rows are appended scene by scene, so a stopped part
+resumes where it left off, and progress goes to stderr every 100 scenes.
 
-  python topology.py score --scenes DIR --pairs screen_crossing.csv --out topo_score --part 0/8
-  python topology.py screen --scenes DIR --pairs screen_crossing.csv --out topo_screen --part 0/8
+  python topology.py run --scenes DIR --pairs screen_crossing.csv --score-out topo_score
+      --screen-out topo_screen --part 0/8 [--only scenes.txt] [--modes rebuilt,rebuilt_geo,no_links]
   python topology.py report --real screen_crossing.csv --score topo_score --screen topo_screen
 """
 
@@ -28,6 +30,7 @@ import csv
 import glob
 import math
 import sys
+import time
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -147,12 +150,14 @@ def rebuild(scene):
         i, j, left = i[keep], j[keep], lat[keep] > 0
         seglen = np.r_[np.linalg.norm(np.diff(pts, axis=0), axis=1), 0.0]  # metres each point of a stands for
         seglen[np.r_[owner[1:] != owner[:-1], True]] = 0.0
-        uniq = np.unique(np.stack([owner[i], owner[j], left, i], axis=1), axis=0)  # each point of a counted once
-        groups, inv = np.unique(uniq[:, :3], axis=0, return_inverse=True)
-        metres = np.zeros(len(groups))
-        np.add.at(metres, inv.ravel(), seglen[uniq[:, 3]])
-        for (a_, b_, l_), m in zip(groups, metres):
+        # each point of a counted once per (a, b, side): one int64 code per pair, sorted once
+        group = (owner[i].astype(np.int64) * len(keys) + owner[j]) * 2 + left
+        code = np.unique(group * len(pts) + i)
+        groups, inv = np.unique(code // len(pts), return_inverse=True)
+        metres = np.bincount(inv, weights=seglen[code % len(pts)], minlength=len(groups))
+        for g_, m in zip(groups, metres):
             if m >= SIDE_OVERLAP:
+                a_, b_, l_ = g_ // 2 // len(keys), g_ // 2 % len(keys), g_ % 2
                 feats[keys[a_]]["left_neighbor" if l_ else "right_neighbor"].append({"feature_id": keys[b_]})
 
     # junction connectors from the tracks
@@ -295,22 +300,29 @@ def movements(scene):
     return out
 
 
-def driven(scene, lane_pts, lane_dir):
-    """Whether some vehicle drove most of ``lane``: matched to it on at least half its points."""
-    from scipy.spatial import cKDTree
-
-    tree = cKDTree(lane_pts)
-    covered = np.zeros(len(lane_pts), bool)
+def moving_points(scene):
+    """Positions and headings of every vehicle seen moving (faster than MOVING) at three steps or more."""
     speed = np.linalg.norm(scene.velocity, axis=-1)
+    P, H = [], []
     for n in range(scene.n_agents):
         if scene.types[n] != "VEHICLE":
             continue
         ok = scene.valid[n] & (speed[n] > MOVING)
-        if ok.sum() < 3:
-            continue
-        P = scene.position[n, ok, :2].astype(float)
-        H = scene.heading[n, ok]
-        d, j = tree.query(P, distance_upper_bound=MATCH)
+        if ok.sum() >= 3:
+            P.append(scene.position[n, ok, :2].astype(float))
+            H.append(scene.heading[n, ok])
+    return (np.concatenate(P), np.concatenate(H)) if P else (np.zeros((0, 2)), np.zeros(0))
+
+
+def driven(moving, lane_pts, lane_dir):
+    """Whether some vehicle drove most of ``lane``: matched to it on at least half its points
+    (``moving``: moving_points of the scene)."""
+    from scipy.spatial import cKDTree
+
+    P, H = moving
+    covered = np.zeros(len(lane_pts), bool)
+    if len(P):
+        d, j = cKDTree(lane_pts).query(P, distance_upper_bound=MATCH)
         hit = np.isfinite(d)
         hit[hit] &= np.abs(wrap(lane_dir[j[hit]] - H[hit])) < MATCH_ANGLE
         covered[j[hit]] = True
@@ -349,51 +361,134 @@ def files_of(path, part):
     return files
 
 
-def cmd_score(args):
+SCORE_COLS = ["scene", "true", "driven", "lost_driven", "found_lost_driven", "rebuilt", "rebuilt_true", "found",
+              "found_driven", "centreline_err_m"]
+SCREEN_COLS = ["scene", "mode", "case", "holder", "went_first", "sdc_violation", "ooi_violation",
+               "sdc_aggressive_candidate", "ooi_aggressive_candidate", "sdc_control", "ooi_control", "sdc_turn",
+               "ooi_turn", "connectors"]
+
+
+def score_scene(scene, a, o, rebuilt, made):
+    """The SCORE_COLS row of one scene: WOMD's junction lanes near the judged pair against the rebuild."""
     from scipy.spatial import cKDTree
 
-    pairs = read_pairs(args.pairs)
+    focus = cKDTree(np.concatenate([scene.position[i, scene.valid[i], :2] for i in (a, o)]).astype(float))
+    truth = movements(scene)
+    g = lane_graph(scene)
+    near = lambda pts: focus.query(pts, distance_upper_bound=REGION)[0].min() < REGION
+    true_lanes = [l for l in truth if l in g.points and near(g.points[l])]
+    moving = moving_points(scene)
+    is_driven = {l: driven(moving, g.points[l], g.direction[l]) for l in true_lanes}
+    # a junction lane is lost only where no painted lane runs along it (WOMD often has both); only a lane
+    # with a point within MATCH_LINE of it can (along's cover test), so a k-d tree picks those first
+    plain = {k: v for k, v in _lanes(rebuilt.map_features).items() if not str(k).startswith("rc_")}
+    keys = list(plain)
+    tree = cKDTree(np.concatenate([plain[k] for k in keys])) if keys else None
+    owner = np.repeat(np.arange(len(keys)), [len(plain[k]) for k in keys])
+    is_lost = {}
+    for l in true_lanes:
+        hits = [] if tree is None else [i for h in tree.query_ball_point(g.points[l], MATCH_LINE + 1e-6) for i in h]
+        cand = {keys[i] for i in set(owner[hits].tolist())}
+        is_lost[l] = along(g.points[l], g.direction[l],
+                           {k: plain[k] for k in keys if k in cand
+                            and np.linalg.norm(plain[k] - g.points[l][0], axis=1).min() < 60}) is None
+    conns = {cid: _resample(np.asarray(rebuilt.map_features[cid]["polyline"], float)[:, :2], RESAMPLE) for cid in made}
+    conns = {c: p for c, p in conns.items() if near(p)}
+    hit, err, used = set(), [], set()
+    for l in true_lanes:
+        best = along(g.points[l], g.direction[l], conns)
+        if best:
+            hit.add(l)
+            err.append(best[0])
+            used.add(best[1])
+    lost_driven = [l for l in true_lanes if is_lost[l] and is_driven[l]]
+    return {"true": len(true_lanes), "driven": sum(is_driven.values()), "lost_driven": len(lost_driven),
+            "found_lost_driven": sum(l in hit for l in lost_driven), "rebuilt": len(conns), "rebuilt_true": len(used),
+            "found": len(hit), "found_driven": sum(is_driven[l] for l in hit),
+            "centreline_err_m": round(float(np.mean(err)), 2) if err else ""}
+
+
+def screen_scene(scene, a, o, deg, rebuilt, made, modes, profile):
+    """SCREEN_COLS rows of one scene: the right-of-way screen on each map of ``modes``."""
+    import screen_crossing as SC
+    from responsibility import lanes as lanes_mod
+    from responsibility import right_of_way as R
+
+    maps = {"rebuilt": lambda: with_true_controls(scene, rebuilt),
+            "rebuilt_geo": lambda: with_true_controls(scene, rebuilt, geometric=True),
+            "no_links": lambda: with_true_controls(scene, deg)}
     rows = []
-    for path in files_of(args.scenes, args.part):
-        row = pairs.get(path.stem)
-        if row is None:
-            continue
+    for mode in modes:
+        out = SC.screen_pair(R, lanes_mod, maps[mode](), a, o, profile, 10)
+        out.update(mode=mode, connectors=len(made))
+        rows.append(out)
+    return rows
+
+
+def cmd_run(args):
+    """Score and/or screen (args.cmd: score, screen or run for both) with one load and one rebuild per
+    scene; rows are appended as each scene finishes, and a part already partly written resumes."""
+    import jurisdiction
+
+    profile = jurisdiction.load_profile(args.profile)
+    pairs = read_pairs(args.pairs)
+    only = set(Path(args.only).read_text().split()) if args.only else None
+    modes = args.modes.split(",")
+    outs = {}
+    if args.cmd in ("score", "run"):
+        outs["score"] = _Out(args.score_out if args.cmd == "run" else args.out, args.part, SCORE_COLS)
+    if args.cmd in ("screen", "run"):
+        outs["screen"] = _Out(args.screen_out if args.cmd == "run" else args.out, args.part, SCREEN_COLS)
+    done = set.intersection(*(o.done for o in outs.values()))
+    todo = [p for p in files_of(args.scenes, args.part)
+            if p.stem in pairs and (only is None or p.stem in only) and p.stem not in done]
+    t0 = time.perf_counter()
+    for k, path in enumerate(todo, 1):
+        row = pairs[path.stem]
         try:
             scene, _ = load_scene(path, Scene)
             a, o = scene.index(row["first_id"]), scene.index(row["second_id"])
-            focus = cKDTree(np.concatenate([scene.position[i, scene.valid[i], :2] for i in (a, o)]).astype(float))
-            truth = movements(scene)
-            rebuilt, made = rebuild(degrade(scene))
-            g = lane_graph(scene)
-            near = lambda pts: focus.query(pts, distance_upper_bound=REGION)[0].min() < REGION
-            true_lanes = [l for l in truth if l in g.points and near(g.points[l])]
-            is_driven = {l: driven(scene, g.points[l], g.direction[l]) for l in true_lanes}
-            # a junction lane is lost only where no painted lane runs along it (WOMD often has both)
-            plain = {k: v for k, v in _lanes(rebuilt.map_features).items() if not str(k).startswith("rc_")}
-            is_lost = {l: along(g.points[l], g.direction[l],
-                                {k: v for k, v in plain.items() if np.linalg.norm(v - g.points[l][0], axis=1).min() < 60})
-                       is None for l in true_lanes}
-            conns = {cid: _resample(np.asarray(rebuilt.map_features[cid]["polyline"], float)[:, :2], RESAMPLE)
-                     for cid in made}
-            conns = {c: p for c, p in conns.items() if near(p)}
-            hit, err, used = set(), [], set()
-            for l in true_lanes:
-                best = along(g.points[l], g.direction[l], conns)
-                if best:
-                    hit.add(l)
-                    err.append(best[0])
-                    used.add(best[1])
-            lost_driven = [l for l in true_lanes if is_lost[l] and is_driven[l]]
-            rows.append({"scene": path.stem, "true": len(true_lanes), "driven": sum(is_driven.values()),
-                         "lost_driven": len(lost_driven), "found_lost_driven": sum(l in hit for l in lost_driven),
-                         "rebuilt": len(conns), "rebuilt_true": len(used), "found": len(hit),
-                         "found_driven": sum(is_driven[l] for l in hit),
-                         "centreline_err_m": round(float(np.mean(err)), 2) if err else ""})
+            deg = degrade(scene)
+            rebuilt, made = rebuild(deg)
+            if "score" in outs and path.stem not in outs["score"].done:
+                outs["score"].add([dict(score_scene(scene, a, o, rebuilt, made), scene=path.stem)])
+            if "screen" in outs and path.stem not in outs["screen"].done:
+                outs["screen"].add([dict(r, scene=path.stem) for r in screen_scene(scene, a, o, deg, rebuilt, made, modes, profile)])
         except Exception as exc:
             print("skip %s: %s: %s" % (path.stem, type(exc).__name__, exc), file=sys.stderr)
-    _write(args.out, args.part, rows, ["scene", "true", "driven", "lost_driven", "found_lost_driven", "rebuilt", "rebuilt_true",
-                                       "found", "found_driven",
-                                       "centreline_err_m"])
+        if k % 100 == 0 or k == len(todo):
+            rate = (time.perf_counter() - t0) / k
+            print("%d/%d scenes, %.2f s/scene, %.0f min left" % (k, len(todo), rate, rate * (len(todo) - k) / 60),
+                  file=sys.stderr, flush=True)
+    for o in outs.values():
+        o.close()
+
+
+class _Out:
+    """A part's CSV, appended to scene by scene; ``done`` holds the scenes already in it."""
+
+    def __init__(self, folder, part, cols):
+        Path(folder).mkdir(parents=True, exist_ok=True)
+        self.name = Path(folder) / ("part_%s.csv" % (part.replace("/", "of") if part else "all"))
+        self.done = set()
+        if self.name.exists():
+            with open(self.name, encoding="utf-8") as f:
+                self.done = {r["scene"] for r in csv.DictReader(f)}
+        fresh = not self.name.exists() or self.name.stat().st_size == 0
+        self.f = open(self.name, "a", newline="", encoding="utf-8")
+        self.w = csv.DictWriter(self.f, fieldnames=cols, extrasaction="ignore")
+        if fresh:
+            self.w.writeheader()
+        self.n = 0
+
+    def add(self, rows):
+        self.w.writerows(rows)
+        self.f.flush()
+        self.n += len(rows)
+
+    def close(self):
+        self.f.close()
+        print("%d rows (%d scenes before) -> %s" % (self.n, len(self.done), self.name))
 
 
 def with_true_controls(scene, rebuilt, geometric=False):
@@ -442,50 +537,6 @@ def with_true_controls(scene, rebuilt, geometric=False):
                 lights["%s_%s" % (k, c)] = dict(v, lane=c)
     out.dynamic_map_states = lights
     return out
-
-
-def cmd_screen(args):
-    import jurisdiction
-    import screen_crossing as SC
-    from responsibility import lanes as lanes_mod
-    from responsibility import right_of_way as R
-
-    profile = jurisdiction.load_profile(args.profile)
-    pairs = read_pairs(args.pairs)
-    rows = []
-    only = set(Path(args.only).read_text().split()) if args.only else None
-    for path in files_of(args.scenes, args.part):
-        row = pairs.get(path.stem)
-        if row is None or (only is not None and path.stem not in only):
-            continue
-        try:
-            scene, _ = load_scene(path, Scene)
-            a, o = scene.index(row["first_id"]), scene.index(row["second_id"])
-            deg = degrade(scene)
-            rebuilt, made = rebuild(deg)
-            modes = {"rebuilt": lambda: with_true_controls(scene, rebuilt),
-                     "rebuilt_geo": lambda: with_true_controls(scene, rebuilt, geometric=True),
-                     "no_links": lambda: with_true_controls(scene, deg)}
-            for mode in args.modes.split(","):
-                sc = modes[mode]()
-                out = SC.screen_pair(R, lanes_mod, sc, a, o, profile, 10)
-                out.update(scene=path.stem, mode=mode, connectors=len(made))
-                rows.append(out)
-        except Exception as exc:
-            print("skip %s: %s: %s" % (path.stem, type(exc).__name__, exc), file=sys.stderr)
-    _write(args.out, args.part, rows, ["scene", "mode", "case", "holder", "went_first", "sdc_violation", "ooi_violation",
-                                       "sdc_aggressive_candidate", "ooi_aggressive_candidate", "sdc_control",
-                                       "ooi_control", "sdc_turn", "ooi_turn", "connectors"])
-
-
-def _write(folder, part, rows, cols):
-    Path(folder).mkdir(parents=True, exist_ok=True)
-    name = Path(folder) / ("part_%s.csv" % (part.replace("/", "of") if part else "all"))
-    with open(name, "w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=cols, extrasaction="ignore")
-        w.writeheader()
-        w.writerows(rows)
-    print("%d rows -> %s" % (len(rows), name))
 
 
 def _read_parts(folder):
@@ -551,11 +602,15 @@ def cmd_report(args):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name in ("score", "screen"):
+    for name in ("score", "screen", "run"):
         p = sub.add_parser(name)
         p.add_argument("--scenes", required=True)
         p.add_argument("--pairs", required=True, help="screen_crossing.csv: the judged pair of each scene")
-        p.add_argument("--out", required=True)
+        if name == "run":
+            p.add_argument("--score-out", required=True)
+            p.add_argument("--screen-out", required=True)
+        else:
+            p.add_argument("--out", required=True)
         p.add_argument("--part")
         p.add_argument("--profile", default="us-california")
         p.add_argument("--only", help="a file of scene names: only these")
@@ -566,7 +621,7 @@ def main():
     r.add_argument("--screen")
     r.add_argument("--out")
     args = ap.parse_args()
-    {"score": cmd_score, "screen": cmd_screen, "report": cmd_report}[args.cmd](args)
+    (cmd_report if args.cmd == "report" else cmd_run)(args)
 
 
 if __name__ == "__main__":

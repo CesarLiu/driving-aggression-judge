@@ -55,11 +55,11 @@ def _angle(a):
 
 
 def _densify(poly: np.ndarray, spacing: float = SPACING) -> np.ndarray:
-    out = [poly[:1]]
-    for a, b in zip(poly[:-1], poly[1:]):
-        n = max(1, int(np.ceil(np.linalg.norm(b - a) / spacing)))
-        out.append(a + (b - a) * (np.arange(1, n + 1)[:, None] / n))
-    return np.concatenate(out)
+    seg = poly[1:] - poly[:-1]
+    n = np.maximum(1, np.ceil(np.sqrt((seg * seg).sum(axis=1)) / spacing).astype(int))
+    k = np.arange(1, n.sum() + 1) - np.repeat(np.cumsum(n) - n, n)  # 1..n within each segment
+    step = np.repeat(seg, n, axis=0) * (k / np.repeat(n, n))[:, None]
+    return np.concatenate([poly[:1], np.repeat(poly[:-1], n, axis=0) + step])
 
 
 class LaneGraph:
@@ -92,10 +92,26 @@ class LaneGraph:
     def __len__(self) -> int:
         return len(self.points)
 
+    def _within(self, xy: np.ndarray) -> List[str]:
+        """The lanes with a point within MATCH_RADIUS of ``xy``, in map order: the only ones whose
+        closest point can pass the MATCH_RADIUS test (a k-d tree finds them; the test is unchanged)."""
+        if not hasattr(self, "_tree"):
+            from scipy.spatial import cKDTree
+
+            keys = list(self.points)
+            self._keys = keys
+            self._tree = cKDTree(np.concatenate([self.points[k] for k in keys])) if keys else None
+            self._owner = np.repeat(np.arange(len(keys)), [len(self.points[k]) for k in keys])
+        if self._tree is None:
+            return []
+        hits = self._tree.query_ball_point(np.asarray(xy, dtype=float), MATCH_RADIUS + 1e-6)
+        return [self._keys[i] for i in np.unique(self._owner[hits])]
+
     def matched(self, xy: np.ndarray, heading: float) -> Set[str]:
         """The lanes a vehicle at ``xy`` heading ``heading`` is on."""
         out = set()
-        for key, pts in self.points.items():
+        for key in self._within(xy):
+            pts = self.points[key]
             d = np.linalg.norm(pts - xy, axis=1)
             i = int(np.argmin(d))
             if d[i] <= MATCH_RADIUS and abs(_angle(self.direction[key][i] - heading)) <= MATCH_ALIGN:
@@ -106,7 +122,8 @@ class LaneGraph:
         """The one lane a vehicle at ``xy`` heading ``heading`` is on (see
         route_lanes), or None."""
         best, score = None, np.inf
-        for key, pts in self.points.items():
+        for key in self._within(xy):
+            pts = self.points[key]
             d = np.linalg.norm(pts - xy, axis=1)
             i = int(np.argmin(d))
             off = abs(_angle(self.direction[key][i] - heading))

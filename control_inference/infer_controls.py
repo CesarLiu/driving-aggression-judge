@@ -95,17 +95,21 @@ def candidates(graph, focus):
     pts = np.concatenate([graph.points[l] for l in near])
     dirs = np.concatenate([graph.direction[l] for l in near])
     owner = np.concatenate([[k] * len(graph.points[l]) for k, l in enumerate(near)])
-    pairs = cKDTree(pts).query_pairs(CROSS_R, output_type="ndarray")
+    pairs = cKDTree(pts).query_pairs(CROSS_R, output_type="ndarray").reshape(-1, 2)
+    i, j = pairs[:, 0], pairs[:, 1]
+    keep = (owner[i] != owner[j]) & (np.abs(wrap(dirs[i] - dirs[j])) >= CROSS_ANGLE)
+    lane_pairs, counts = np.unique(np.stack([owner[i[keep]], owner[j[keep]]], axis=1).reshape(-1, 2), axis=0,
+                                   return_counts=True)  # point pairs per (a, b): the related test is per lane pair
     crosses = Counter()
-    for i, j in pairs:
-        a, b = near[owner[i]], near[owner[j]]
-        if a == b or abs(wrap(dirs[i] - dirs[j])) < CROSS_ANGLE:
-            continue
-        related = (set(graph.exits[a]) | preds[a] | set(graph.sides[a])
-                   | {s for p in preds[a] for s in graph.exits[p]})
-        if b not in related:
-            crosses[a] += 1
-            crosses[b] += 1
+    related = {}
+    for (ka, kb), c in zip(lane_pairs, counts):
+        a, b = near[ka], near[kb]
+        if a not in related:
+            related[a] = (set(graph.exits[a]) | preds[a] | set(graph.sides[a])
+                          | {s for p in preds[a] for s in graph.exits[p]})
+        if b not in related[a]:
+            crosses[a] += int(c)
+            crosses[b] += int(c)
     return [l for l in near if preds[l] and (any(len(graph.exits[p]) >= 2 for p in preds[l]) or crosses[l])], \
         {l: crosses[l] for l in near}, preds
 
@@ -211,24 +215,23 @@ def evidence(kin, graph, lane):
 def relations(graph, lanes):
     """For each candidate lane, the candidates within CONTEXT m by relative direction."""
     out = {l: {c: [] for c in CLASSES} for l in lanes}
-    for a in lanes:
-        sa, ha = graph.points[a][0], graph.direction[a][0]
-        ua = np.array([math.cos(ha), math.sin(ha)])
-        for b in lanes:
-            if a == b:
-                continue
-            sb, hb = graph.points[b][0], graph.direction[b][0]
-            r = sb - sa
-            if np.linalg.norm(r) > CONTEXT:
-                continue
-            dh = abs(wrap(hb - ha))
-            lat = abs(r[1] * ua[0] - r[0] * ua[1])
-            if dh < math.radians(20) and lat > 2.0 and abs(r @ ua) < 15:
-                out[a]["parallel"].append(b)
-            elif dh > math.radians(150):
-                out[a]["opposite"].append(b)
-            elif math.radians(60) < dh < math.radians(120):
-                out[a]["crossing"].append(b)
+    if not lanes:
+        return out
+    s = np.array([graph.points[l][0] for l in lanes], float)
+    h = np.array([graph.direction[l][0] for l in lanes], float)
+    u = np.stack([np.cos(h), np.sin(h)], axis=1)
+    r = s[None, :, :] - s[:, None, :]  # [a, b]: from a's start to b's
+    dist = np.sqrt((r * r).sum(-1))
+    dh = np.abs(wrap(h[None, :] - h[:, None]))
+    lat = np.abs(r[..., 1] * u[:, None, 0] - r[..., 0] * u[:, None, 1])
+    lon = np.abs(r[..., 0] * u[:, None, 0] + r[..., 1] * u[:, None, 1])
+    ok = (dist <= CONTEXT) & ~np.eye(len(lanes), dtype=bool)
+    par = ok & (dh < math.radians(20)) & (lat > 2.0) & (lon < 15)
+    opp = ok & ~par & (dh > math.radians(150))
+    cro = ok & ~par & ~opp & (dh > math.radians(60)) & (dh < math.radians(120))
+    for k, a in enumerate(lanes):
+        for c, m in (("parallel", par), ("opposite", opp), ("crossing", cro)):
+            out[a][c] = [lanes[x] for x in np.flatnonzero(m[k])]
     return out
 
 
@@ -332,27 +335,38 @@ def _union(evs, key):
     return sorted({e for ev in evs for e in ev[key]})
 
 
-def scene_rows(scene, exclude, focus, dyn_lanes=None, dyn_steps=None):
+def scene_rows(scene, exclude, focus, dyn_lanes=None, dyn_steps=None, cache=None):
     """Static rows for every candidate lane, and dynamic rows for ``dyn_lanes`` (default: the lanes
-    with a light in the map, at their known states) at ``dyn_steps``."""
-    graph = lane_graph(scene)
-    found = candidates(graph, focus)
-    if not found or not found[0]:
+    with a light in the map, at their known states) at ``dyn_steps``. A ``cache`` dict passed to
+    several calls on one scene keeps the candidates and their evidence from the first."""
+    if cache is not None and "ctx" in cache:
+        ctx = cache["ctx"]
+    else:
+        graph = lane_graph(scene)
+        found = candidates(graph, focus)
+        if not found or not found[0]:
+            ctx = None
+        else:
+            lanes = found[0]
+            kin = Kin(scene, exclude)
+            ev = {l: evidence(kin, graph, l) for l in lanes}
+            starts = np.array([graph.points[l][0] for l in lanes], float)
+            gap = np.sqrt(((starts[:, None] - starts[None]) ** 2).sum(-1))
+            ctx = (graph, found, {l: e for l, (e, _) in ev.items()}, {l: p for l, (_, p) in ev.items()},
+                   relations(graph, lanes), labels(scene, graph, lanes),
+                   dict(zip(lanes, ((gap < 1.5).sum(1) - 1).tolist())))  # siblings: other starts within 1.5 m
+        if cache is not None:
+            cache["ctx"] = ctx
+    if ctx is None:
         return None
-    lanes, crosses, preds = found
-    kin = Kin(scene, exclude)
-    evs, pers = {}, {}
-    for l in lanes:
-        evs[l], pers[l] = evidence(kin, graph, l)
-    rel = relations(graph, lanes)
-    static_y, lights = labels(scene, graph, lanes)
+    graph, (lanes, crosses, preds), evs, pers, rel, (static_y, lights), siblings = ctx
     T = scene.n_steps
 
     def own_static(l):
         p = pers[l]
         fs = p["front_stops"]
         turn = math.degrees(float(wrap(graph.direction[l][-1] - graph.direction[l][0])))
-        sib = sum(1 for m in lanes if m != l and np.linalg.norm(graph.points[m][0] - graph.points[l][0]) < 1.5)
+        sib = siblings[l]
         return {"seen": p["seen"], "crossed": p["crossed"], "entered": p["entered"], "cross_stop": p["cross_stop"],
                 "cross_nostop": p["cross_nostop"],
                 "frac_cross_stop": p["cross_stop"] / max(1, p["cross_stop"] + p["cross_nostop"]),
@@ -630,13 +644,14 @@ def with_controls(scene, stop_lanes, lights_by_lane):
     return out
 
 
-def infer(scene, exclude, focus, sm, dm, min_conf, jm=None, static_conf=0.0, all_way=(1.0, 1.0)):
+def infer(scene, exclude, focus, sm, dm, min_conf, jm=None, static_conf=0.0, all_way=(1.0, 1.0), cache=None):
     """Stop lanes, light states per lane, and (truth, prediction) per candidate lane. With ``jm`` the
     junction model decides all-way stops: P(all-way) >= hi makes every lane of the junction a stop
     lane, and between lo and hi its stop and none lanes are left unknown. Lanes the lane model gives
     less than ``static_conf`` are unknown too. An unknown lane gets a light whose state is unknown at
     every step, which the rules read as "control unknown": no verdict rather than a guessed one."""
-    r = scene_rows(scene, exclude, focus)
+    cache = {} if cache is None else cache  # scene_rows' context, shared by its calls (and by callers' modes)
+    r = scene_rows(scene, exclude, focus, cache=cache)
     if r is None:
         return set(), {}, {}
     prob = sm.predict_proba(r["static_X"])
@@ -658,7 +673,7 @@ def infer(scene, exclude, focus, sm, dm, min_conf, jm=None, static_conf=0.0, all
     lights = {}
     if sig:
         steps = list(range(0, scene.n_steps, STEP_EVERY))
-        rd = scene_rows(scene, exclude, focus, dyn_lanes=sig, dyn_steps=steps)
+        rd = scene_rows(scene, exclude, focus, dyn_lanes=sig, dyn_steps=steps, cache=cache)
         pp = dm.predict_proba(rd["dyn_X"])
         at = defaultdict(dict)
         for (l, t), p in zip(rd["dyn_meta"], pp):
@@ -695,14 +710,15 @@ def cmd_evaluate(args):
         try:
             scene, _ = load_scene(path, Scene)
             a, o, focus = pair_of(scene, row)
+            cache = {}
             for mode in args.modes.split(","):
                 if mode == "no_controls":
                     stop, lights, lane_pred = (), {}, {}
                 elif mode == "inferred":
-                    stop, lights, lane_pred = infer(scene, {a, o}, focus, sm, dm, args.min_conf)
+                    stop, lights, lane_pred = infer(scene, {a, o}, focus, sm, dm, args.min_conf, cache=cache)
                 elif mode == "gated":
                     stop, lights, lane_pred = infer(scene, {a, o}, focus, sm, dm, args.min_conf, jm,
-                                                    args.static_conf, (args.all_way_lo, args.all_way_hi))
+                                                    args.static_conf, (args.all_way_lo, args.all_way_hi), cache=cache)
                 out = SC.screen_pair(R, lanes_mod, with_controls(scene, stop, lights), a, o, profile, 10)
                 out.update(scene=path.stem, mode=mode, n_stop=len(stop),
                            n_signal=sum(v is not None for v in lights.values()),
