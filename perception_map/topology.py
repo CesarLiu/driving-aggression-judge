@@ -575,7 +575,7 @@ def cmd_report(args):
         for r in _read_parts(args.screen):
             ev[r["mode"]][r["scene"]] = r
         for where in ("all", "junction"):
-            for mode in ("rebuilt", "no_links"):
+            for mode in [m for m in ("rebuilt", "rebuilt_geo", "no_links") if m in ev]:
                 got = ev.get(mode, {})
                 common = [x for x in got if x in real and (where == "all" or real[x]["case"] not in NOT_JUNCTION)]
                 if not common:
