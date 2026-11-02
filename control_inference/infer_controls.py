@@ -24,9 +24,16 @@ way", which is exactly wrong for the violations the screen looks for.
   python infer_controls.py compare --real screen_crossing.csv --eval eval [eval_gated]
 
 A third model works per junction (lanes grouped by their starts): none, two-way stop, all-way stop or
-signal. Mode "gated" lets it decide all-way stops, and leaves a control unknown where either model is
-unsure (an always-unknown light, so the rules give no verdict instead of a guessed one). Feature parts
+signal; it did worse than the lane model, so mode "gated" uses it only with --junction-model (to decide
+all-way stops). Gated leaves a control unknown where the lane model is unsure (an always-unknown light,
+so the rules give no verdict instead of a guessed one). Unless trained with --no-context, a second
+lane model sees each lane's row with the first one's probabilities for every approach of its junction:
+whether the crossing approaches stop too is what tells an all-way stop from a two-way one. Feature parts
 extracted before lane starts were stored get them with: geometry --scenes DIR --features feats.
+The perception-only setting: --map rebuilt (extract, evaluate) infers on the map with its topology
+rebuilt from the tracks (perception_map/topology.py), the true controls moved onto the rebuilt lanes as
+labels; --pool adds the tracks of the other scenes at the same place (perception_map/pool.py) to the
+rebuild and to the static evidence. Models must be trained on features extracted the same way.
 Set OMP_NUM_THREADS=1 when other jobs share the machine: sklearn's threads otherwise stall each other.
 """
 
@@ -44,6 +51,7 @@ import numpy as np
 
 SKILL = Path(__file__).resolve().parents[1] / ".claude" / "skills" / "judge-driving-aggression" / "scripts"
 sys.path.insert(0, str(SKILL))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "perception_map"))  # pool, topology
 from scenes import load_scene  # noqa: E402
 from responsibility.scene import Scene  # noqa: E402
 from responsibility.lanes import lane_graph  # noqa: E402
@@ -140,13 +148,34 @@ def labels(scene, graph, lanes):
 class Kin:
     """The other vehicles' tracks: everything but the judged pair and non-vehicles."""
 
-    def __init__(self, scene, exclude):
-        keep = [i for i in range(scene.n_agents) if scene.types[i] == "VEHICLE" and i not in exclude]
-        self.P = scene.position[keep, :, :2].astype(float)
-        self.H = scene.heading[keep].astype(float)
-        self.V = scene.valid[keep]
-        self.S = np.linalg.norm(scene.velocity[keep], axis=-1)
+    def __init__(self, scene, exclude=()):
+        """``scene``: a Scene, or a dict of vehicle track arrays (pool.others_tracks)."""
+        if isinstance(scene, dict):
+            P, H, V, vel = scene["position"], scene["heading"], scene["valid"], scene["velocity"]
+        else:
+            keep = [i for i in range(scene.n_agents) if scene.types[i] == "VEHICLE" and i not in exclude]
+            P, H, V, vel = scene.position[keep], scene.heading[keep], scene.valid[keep], scene.velocity[keep]
+        self.P = P[:, :, :2].astype(float)
+        self.H = H.astype(float)
+        self.V = V
+        self.S = np.linalg.norm(vel, axis=-1)
         self.N, self.T = self.V.shape
+
+
+PER_SUM = ("crossed", "entered", "cross_stop", "cross_nostop", "waiting_end", "seen")
+PER_JOIN = ("cross_vmin", "front_stops")
+
+
+def pooled_per(per, others):
+    """``per`` (evidence of the scene's own vehicles) with the per-vehicle evidence of other scenes'
+    vehicles at the same lane added: counts summed, per-vehicle values joined."""
+    out = dict(per)
+    for o in others:
+        for k in PER_SUM:
+            out[k] = out[k] + o[k]
+        for k in PER_JOIN:
+            out[k] = out[k] + o[k]
+    return out
 
 
 def evidence(kin, graph, lane):
@@ -311,6 +340,71 @@ def junction_rows(X, names, junction, approach):
     return np.asarray(rows, np.float32).reshape(-1, len(JUNCTION_NAMES)), members
 
 
+# A second stage per lane: its static row and the first stage's probabilities, beside those of the
+# other approaches of its junction. Whether an approach has a stop sign of an all-way stop depends on
+# whether the crossing approaches stop too, which the first stage sees only as raw counts.
+
+CONTEXT_NAMES = ["ctx_approaches", "ctx_own_none", "ctx_own_stop", "ctx_own_signal",
+                 "ctx_stop_min", "ctx_stop_max", "ctx_stop_mean", "ctx_signal_min", "ctx_signal_max", "ctx_signal_mean",
+                 "ctx_n_stop", "ctx_n_none", "ctx_cross_stop_p", "ctx_cross_signal_p", "ctx_opp_stop_p",
+                 "ctx_others_cross_stop", "ctx_others_cross_nostop", "ctx_others_frac_stop",
+                 "ctx_cro_cross_stop", "ctx_cro_cross_nostop"]
+
+
+def context_rows(X, names, starts, p):
+    """Second-stage rows for one scene's candidate lanes: static rows ``X``, first-stage probabilities
+    ``p`` (none, stop, signal), and CONTEXT_NAMES from the other approaches of the lane's junction."""
+    junction, approach = junction_groups(starts)
+    cs, cn = names.index("cross_stop"), names.index("cross_nostop")
+    out = np.zeros((len(X), len(CONTEXT_NAMES)), np.float32)
+    agg = lambda v: [min(v), max(v), float(np.mean(v))] if v else [-1.0, -1.0, -1.0]
+    for j in np.unique(junction):
+        idx = np.flatnonzero(junction == j)
+        lanes = {a: idx[approach[idx] == a] for a in np.unique(approach[idx])}
+        head = {a: starts[m[0], 2] for a, m in lanes.items()}
+        mp = {a: p[m].mean(0) for a, m in lanes.items()}
+        stops = {a: (X[m, cs].sum(), X[m, cn].sum()) for a, m in lanes.items()}
+        for a, m in lanes.items():
+            others = [b for b in lanes if b != a]
+            rel = {b: abs(float(wrap(head[b] - head[a]))) for b in others}
+            cro = [b for b in others if math.radians(60) < rel[b] < math.radians(120)]
+            opp = [b for b in others if rel[b] > math.radians(150)]
+            s, n = sum(stops[b][0] for b in others), sum(stops[b][1] for b in others)
+            out[m] = [len(lanes), *mp[a], *agg([mp[b][1] for b in others]), *agg([mp[b][2] for b in others]),
+                      sum(mp[b][1] > 0.5 for b in others), sum(mp[b][0] > 0.5 for b in others),
+                      float(np.mean([mp[b][1] for b in cro])) if cro else -1.0,
+                      float(np.mean([mp[b][2] for b in cro])) if cro else -1.0,
+                      float(np.mean([mp[b][1] for b in opp])) if opp else -1.0,
+                      s, n, s / (s + n) if s + n else -1.0,
+                      sum(stops[b][0] for b in cro), sum(stops[b][1] for b in cro)]
+    return np.hstack([X, p.astype(np.float32), out])
+
+
+def context_data(d, p, rows):
+    """context_rows for the static rows ``rows`` (indices into ``d``) of every scene, in that order."""
+    by = defaultdict(list)
+    for i in rows:
+        by[d["static_scene"][i]].append(i)
+    out = np.zeros((len(d["static_y"]), len(d["names"][0]) + 3 + len(CONTEXT_NAMES)), np.float32)
+    for idx in by.values():
+        idx = np.asarray(idx)
+        out[idx] = context_rows(d["static_X"][idx], d["names"][0], d["static_start"][idx], p[idx])
+    return out[np.asarray(rows)]
+
+
+def junction_of_lanes(d, pred):
+    """junction_label of every junction of junction_data (same order) from lane predictions ``pred``."""
+    by = defaultdict(list)
+    for i, s in enumerate(d["static_scene"]):
+        by[s].append(i)
+    out = []
+    for idx in by.values():
+        idx = np.asarray(idx)
+        junction, approach = junction_groups(d["static_start"][idx])
+        out += [junction_label(pred[idx][junction == j], approach[junction == j]) for j in np.unique(junction)]
+    return np.asarray(out, np.int8)
+
+
 def junction_data(d):
     """Junction rows, labels and scenes for every scene of the extracted features ``d``."""
     by = defaultdict(list)
@@ -335,10 +429,12 @@ def _union(evs, key):
     return sorted({e for ev in evs for e in ev[key]})
 
 
-def scene_rows(scene, exclude, focus, dyn_lanes=None, dyn_steps=None, cache=None):
+def scene_rows(scene, exclude, focus, dyn_lanes=None, dyn_steps=None, cache=None, pool=()):
     """Static rows for every candidate lane, and dynamic rows for ``dyn_lanes`` (default: the lanes
     with a light in the map, at their known states) at ``dyn_steps``. A ``cache`` dict passed to
-    several calls on one scene keeps the candidates and their evidence from the first."""
+    several calls on one scene keeps the candidates and their evidence from the first. ``pool``: Kin
+    of other scenes at the same place, whose per-vehicle evidence adds to the static rows (anything
+    timed, and the dynamic rows, come from the scene's own vehicles)."""
     if cache is not None and "ctx" in cache:
         ctx = cache["ctx"]
     else:
@@ -350,6 +446,8 @@ def scene_rows(scene, exclude, focus, dyn_lanes=None, dyn_steps=None, cache=None
             lanes = found[0]
             kin = Kin(scene, exclude)
             ev = {l: evidence(kin, graph, l) for l in lanes}
+            if pool:
+                ev = {l: (e, pooled_per(p, [evidence(k, graph, l)[1] for k in pool])) for l, (e, p) in ev.items()}
             starts = np.array([graph.points[l][0] for l in lanes], float)
             gap = np.sqrt(((starts[:, None] - starts[None]) ** 2).sum(-1))
             ctx = (graph, found, {l: e for l, (e, _) in ev.items()}, {l: p for l, (_, p) in ev.items()},
@@ -453,6 +551,35 @@ def pair_of(scene, row):
     return a, o, focus
 
 
+def map_of(name, scene, args):
+    """The scene the controls are inferred on, carrying its true controls (the labels), and the Kin of
+    the other scenes pooled into it (``args.pool``: pool.py's folder). ``args.map``: "full", WOMD's
+    map; or "rebuilt", the perception-only map with its topology rebuilt from the tracks (pooled ones
+    too) and the true controls moved onto the rebuilt lanes by geometry."""
+    groups = []
+    if args.pool:
+        import pool as PL
+
+        groups = PL.others_tracks(scene, _places(args.pool).get(name, []), args.pool)
+    if args.map == "full":
+        return scene, [Kin(g) for g in groups]
+    import topology as TP
+
+    rebuilt, _ = TP.rebuild_pooled(TP.degrade(scene), groups)
+    return TP.with_true_controls(scene, rebuilt, geometric=True), [Kin(g) for g in groups]
+
+
+_PLACES = {}
+
+
+def _places(folder):
+    if folder not in _PLACES:
+        import pool as PL
+
+        _PLACES[folder] = PL.load_places(folder)
+    return _PLACES[folder]
+
+
 def files_of(path, part):
     files = sorted(Path(p) for p in glob.glob(str(Path(path) / "*.pkl")))
     if part:
@@ -481,7 +608,8 @@ def cmd_extract(args):
         try:
             scene, _ = load_scene(path, Scene)
             a, o, focus = pair_of(scene, row)
-            r = scene_rows(scene, {a, o}, focus)
+            on, pool = map_of(path.stem, scene, args)
+            r = scene_rows(on, {a, o}, focus, pool=pool)
         except Exception as exc:  # one bad scene must not stop the part
             print("skip %s: %s: %s" % (path.stem, type(exc).__name__, exc), file=sys.stderr)
             continue
@@ -573,15 +701,29 @@ def cmd_train(args):
     fs = np.array([fold[s] for s in d["static_scene"]])
     fd = np.array([fold[s] for s in d["dyn_scene"]])
     models, ps, pd_ = {}, np.zeros(len(fs), int), np.zeros(len(fd), int)
+    static_model = lambda: HistGradientBoostingClassifier(max_iter=300, learning_rate=0.08, random_state=0)
+    context = args.context and d["static_start"] is not None
+    pp, p2 = np.zeros((len(fs), len(STATIC))), np.zeros(len(fs), int)  # first-stage probabilities, second stage
     if d["static_start"] is not None:
         jX, jy, jscene = junction_data(d)
         fj = np.array([fold[s] for s in jscene])
         pj = np.zeros((len(jy), len(JUNCTION)))
     for k in range(args.folds):
         tr, te = fs != k, fs == k
-        sm = HistGradientBoostingClassifier(max_iter=300, learning_rate=0.08, random_state=0)
-        sm.fit(d["static_X"][tr], d["static_y"][tr])
-        ps[te] = sm.predict(d["static_X"][te])
+        sm = static_model().fit(d["static_X"][tr], d["static_y"][tr])
+        pp[te] = sm.predict_proba(d["static_X"][te])
+        ps[te] = pp[te].argmax(1)
+        s2 = None
+        if context:  # its training rows get first-stage probabilities from models that never saw their cell either
+            inner = np.zeros_like(pp)
+            for m in range(args.folds):
+                if m != k:
+                    fit = (fs != k) & (fs != m)
+                    inner[fs == m] = static_model().fit(d["static_X"][fit], d["static_y"][fit]).predict_proba(
+                        d["static_X"][fs == m])
+            trs, tes = np.flatnonzero(tr), np.flatnonzero(te)
+            s2 = static_model().fit(context_data(d, inner, trs), d["static_y"][trs])
+            p2[tes] = s2.predict(context_data(d, pp, tes))
         trd = np.flatnonzero(fd != k)
         if len(trd) > args.max_dyn:
             trd = rng.choice(trd, args.max_dyn, replace=False)
@@ -594,15 +736,20 @@ def cmd_train(args):
             jm = HistGradientBoostingClassifier(max_iter=300, learning_rate=0.08, random_state=0)
             jm.fit(jX[fj != k], jy[fj != k])
             pj[np.ix_(fj == k, jm.classes_)] = jm.predict_proba(jX[fj == k])
-        models[k] = (sm, dm, jm)
+        models[k] = (sm, dm, jm, s2)
         print("fold %d: %d/%d static, %d/%d dynamic rows held out" % (k, te.sum(), len(fs), ted.sum(), len(fd)), flush=True)
     parts = [
         "%d scenes in %d spatial cells (500 m), %d folds; every prediction below is from a model that never saw "
         "its cell" % (len(scenes), len(cells), args.folds),
         _report("static (candidate lanes)", d["static_y"], ps, STATIC),
+        *([_report("static, second stage (with the junction's other approaches)", d["static_y"], p2, STATIC)]
+          if context else []),
         _report("dynamic (signalised lanes, every 1 s, known states)", d["dyn_y"], pd_, DYNAMIC)]
     if d["static_start"] is not None:
-        parts.append(_report("junction", jy, pj.argmax(1), JUNCTION))
+        parts.append(_report("junction, from the lane model's predictions", jy, junction_of_lanes(d, ps), JUNCTION))
+        if context:
+            parts.append(_report("junction, from the second stage's predictions", jy, junction_of_lanes(d, p2), JUNCTION))
+        parts.append(_report("junction model", jy, pj.argmax(1), JUNCTION))
         stop = np.isin(jy, (1, 2))  # stop-controlled junctions: is it all-way?
         p_all, all_way = pj[stop, 2], jy[stop] == 2
         lines = ["all-way vs two-way on %d stop-controlled junctions (%d all-way): P(all-way) >= hi -> all-way, "
@@ -644,17 +791,20 @@ def with_controls(scene, stop_lanes, lights_by_lane):
     return out
 
 
-def infer(scene, exclude, focus, sm, dm, min_conf, jm=None, static_conf=0.0, all_way=(1.0, 1.0), cache=None):
+def infer(scene, exclude, focus, sm, dm, min_conf, jm=None, static_conf=0.0, all_way=(1.0, 1.0), cache=None,
+          pool=(), s2=None):
     """Stop lanes, light states per lane, and (truth, prediction) per candidate lane. With ``jm`` the
     junction model decides all-way stops: P(all-way) >= hi makes every lane of the junction a stop
     lane, and between lo and hi its stop and none lanes are left unknown. Lanes the lane model gives
     less than ``static_conf`` are unknown too. An unknown lane gets a light whose state is unknown at
     every step, which the rules read as "control unknown": no verdict rather than a guessed one."""
     cache = {} if cache is None else cache  # scene_rows' context, shared by its calls (and by callers' modes)
-    r = scene_rows(scene, exclude, focus, cache=cache)
+    r = scene_rows(scene, exclude, focus, cache=cache, pool=pool)
     if r is None:
         return set(), {}, {}
     prob = sm.predict_proba(r["static_X"])
+    if s2 is not None:  # the second stage, from the first one's probabilities across each junction
+        prob = s2.predict_proba(context_rows(r["static_X"], r["names_static"], r["static_start"], prob))
     cls = prob.argmax(1)
     unsure = prob.max(1) < static_conf
     if jm is not None:
@@ -706,20 +856,23 @@ def cmd_evaluate(args):
         row = pairs.get(path.stem)
         if row is None or path.stem not in bundle["fold"] or (args.junction_only and row["case"] in NOT_JUNCTION):
             continue
-        sm, dm, jm = (bundle["models"][bundle["fold"][path.stem]] + (None,))[:3]
+        sm, dm, jm, s2 = (bundle["models"][bundle["fold"][path.stem]] + (None, None))[:4]
+        jm = jm if args.junction_model else None
         try:
             scene, _ = load_scene(path, Scene)
             a, o, focus = pair_of(scene, row)
+            on, pool = map_of(path.stem, scene, args)
             cache = {}
             for mode in args.modes.split(","):
                 if mode == "no_controls":
                     stop, lights, lane_pred = (), {}, {}
                 elif mode == "inferred":
-                    stop, lights, lane_pred = infer(scene, {a, o}, focus, sm, dm, args.min_conf, cache=cache)
+                    stop, lights, lane_pred = infer(on, {a, o}, focus, sm, dm, args.min_conf, cache=cache, pool=pool,
+                                                    s2=s2)
                 elif mode == "gated":
-                    stop, lights, lane_pred = infer(scene, {a, o}, focus, sm, dm, args.min_conf, jm,
-                                                    args.static_conf, (args.all_way_lo, args.all_way_hi), cache=cache)
-                out = SC.screen_pair(R, lanes_mod, with_controls(scene, stop, lights), a, o, profile, 10)
+                    stop, lights, lane_pred = infer(on, {a, o}, focus, sm, dm, args.min_conf, jm, args.static_conf,
+                                                    (args.all_way_lo, args.all_way_hi), cache=cache, pool=pool, s2=s2)
+                out = SC.screen_pair(R, lanes_mod, with_controls(on, stop, lights), a, o, profile, 10)
                 out.update(scene=path.stem, mode=mode, n_stop=len(stop),
                            n_signal=sum(v is not None for v in lights.values()),
                            n_unknown=sum(v is None for v in lights.values()),
@@ -788,23 +941,31 @@ def main():
     e.add_argument("--pairs", required=True, help="screen_crossing.csv: the judged pair of each scene")
     e.add_argument("--out", required=True)
     e.add_argument("--part")
+    e.add_argument("--map", choices=("full", "rebuilt"), default="full",
+                   help="rebuilt: the perception-only map with the topology rebuilt from the tracks")
+    e.add_argument("--pool", help="pool.py folder: add the tracks of other scenes at the same place")
     t = sub.add_parser("train")
     t.add_argument("--features", required=True)
     t.add_argument("--out", required=True)
     t.add_argument("--folds", type=int, default=5)
     t.add_argument("--max-dyn", type=int, default=400000, help="dynamic rows per fold to train on")
+    t.add_argument("--no-context", dest="context", action="store_false", help="no second-stage lane model")
     v = sub.add_parser("evaluate")
     v.add_argument("--scenes", required=True)
     v.add_argument("--pairs", required=True)
     v.add_argument("--models", required=True)
     v.add_argument("--out", required=True)
     v.add_argument("--part")
+    v.add_argument("--map", choices=("full", "rebuilt"), default="full",
+                   help="rebuilt: the perception-only map with the topology rebuilt from the tracks")
+    v.add_argument("--pool", help="pool.py folder: add the tracks of other scenes at the same place")
     v.add_argument("--profile", default="us-california")
     v.add_argument("--min-conf", type=float, default=0.6, help="below this a light state stays unknown")
     v.add_argument("--modes", default="inferred,no_controls", help="comma list of inferred, gated, no_controls")
     v.add_argument("--static-conf", type=float, default=0.6, help="gated: below this a lane's control is unknown")
     v.add_argument("--all-way-lo", type=float, default=0.2, help="gated: P(all-way) at or below this: two-way")
     v.add_argument("--all-way-hi", type=float, default=0.8, help="gated: P(all-way) at or above this: all-way")
+    v.add_argument("--junction-model", action="store_true", help="gated: let the junction model decide all-way stops")
     v.add_argument("--junction-only", action="store_true", help="skip pairs whose full-map case needs no controls")
     c = sub.add_parser("compare")
     c.add_argument("--real", required=True)

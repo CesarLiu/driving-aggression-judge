@@ -17,10 +17,11 @@ speed limits. ``rebuild`` then restores:
 error), and ``screen`` runs the right-of-way screen on rebuilt maps with WOMD's controls moved onto
 the rebuilt connectors, which isolates what the topology costs. ``run`` does both with one rebuild
 per scene (``score`` and ``screen`` do one each); rows are appended scene by scene, so a stopped part
-resumes where it left off, and progress goes to stderr every 100 scenes.
+resumes where it left off, and progress goes to stderr every 100 scenes. With ``--pool`` (pool.py) the
+rebuild also uses the tracks of the other scenes recorded at the same place.
 
   python topology.py run --scenes DIR --pairs screen_crossing.csv --score-out topo_score
-      --screen-out topo_screen --part 0/8 [--only scenes.txt] [--modes rebuilt,rebuilt_geo,no_links]
+      --screen-out topo_screen --part 0/8 [--only scenes.txt] [--modes rebuilt,rebuilt_geo,no_links] [--pool pool]
   python topology.py report --real screen_crossing.csv --score topo_score --screen topo_screen
 """
 
@@ -263,6 +264,19 @@ def rebuild(scene):
     return out, made
 
 
+def rebuild_pooled(deg, groups=()):
+    """rebuild(deg) from its own tracks and those of ``groups`` (pool.others_tracks); the rebuilt scene
+    keeps only its own agents."""
+    import pool as PL
+
+    out, made = rebuild(PL.pooled(deg, groups))
+    if groups:
+        own = copy.copy(deg)
+        own.map_features = out.map_features
+        out = own
+    return out, made
+
+
 def _split(feats, lane, arc, at):
     """Cut ``lane`` at the arc positions ``at``: the first piece keeps the lane's id (so links and
     controls on it still hold), the others are <lane>_s1, _s2, ...; each piece leads to the next and
@@ -409,14 +423,17 @@ def score_scene(scene, a, o, rebuilt, made):
 
 
 def screen_scene(scene, a, o, deg, rebuilt, made, modes, profile):
-    """SCREEN_COLS rows of one scene: the right-of-way screen on each map of ``modes``."""
+    """SCREEN_COLS rows of one scene: the right-of-way screen on each map of ``modes`` (the *_none maps
+    have no controls at all; infer_controls.py evaluate --map rebuilt gives them inferred ones)."""
     import screen_crossing as SC
     from responsibility import lanes as lanes_mod
     from responsibility import right_of_way as R
 
     maps = {"rebuilt": lambda: with_true_controls(scene, rebuilt),
             "rebuilt_geo": lambda: with_true_controls(scene, rebuilt, geometric=True),
-            "no_links": lambda: with_true_controls(scene, deg)}
+            "no_links": lambda: with_true_controls(scene, deg),
+            "rebuilt_none": lambda: rebuilt,
+            "no_links_none": lambda: deg}
     rows = []
     for mode in modes:
         out = SC.screen_pair(R, lanes_mod, maps[mode](), a, o, profile, 10)
@@ -434,6 +451,10 @@ def cmd_run(args):
     pairs = read_pairs(args.pairs)
     only = set(Path(args.only).read_text().split()) if args.only else None
     modes = args.modes.split(",")
+    if args.pool:
+        import pool as PL
+
+        places = PL.load_places(args.pool)
     outs = {}
     if args.cmd in ("score", "run"):
         outs["score"] = _Out(args.score_out if args.cmd == "run" else args.out, args.part, SCORE_COLS)
@@ -449,11 +470,13 @@ def cmd_run(args):
             scene, _ = load_scene(path, Scene)
             a, o = scene.index(row["first_id"]), scene.index(row["second_id"])
             deg = degrade(scene)
-            rebuilt, made = rebuild(deg)
+            rebuilt, made = rebuild_pooled(deg, PL.others_tracks(scene, places.get(path.stem, []), args.pool)
+                                           if args.pool else ())
             if "score" in outs and path.stem not in outs["score"].done:
                 outs["score"].add([dict(score_scene(scene, a, o, rebuilt, made), scene=path.stem)])
             if "screen" in outs and path.stem not in outs["screen"].done:
-                outs["screen"].add([dict(r, scene=path.stem) for r in screen_scene(scene, a, o, deg, rebuilt, made, modes, profile)])
+                outs["screen"].add([dict(r, scene=path.stem) for r in screen_scene(
+                    scene, a, o, deg, rebuilt, made, modes, profile)])
         except Exception as exc:
             print("skip %s: %s: %s" % (path.stem, type(exc).__name__, exc), file=sys.stderr)
         if k % 100 == 0 or k == len(todo):
@@ -548,6 +571,8 @@ def _read_parts(folder):
 
 
 NOT_JUNCTION = ("same-direction", "following", "no-conflict", "paths-do-not-cross", "too-short", "driveway")
+MODE_TITLE = {"rebuilt": "rebuilt map, true controls", "rebuilt_geo": "rebuilt map, true controls moved by geometry",
+              "no_links": "no_links map, true controls", "rebuilt_none": "rebuilt map, no controls", "no_links_none": "no_links map, no controls"}
 
 
 def cmd_report(args):
@@ -575,13 +600,13 @@ def cmd_report(args):
         for r in _read_parts(args.screen):
             ev[r["mode"]][r["scene"]] = r
         for where in ("all", "junction"):
-            for mode in [m for m in ("rebuilt", "rebuilt_geo", "no_links") if m in ev]:
+            for mode in [m for m in MODE_TITLE if m in ev]:
                 got = ev.get(mode, {})
                 common = [x for x in got if x in real and (where == "all" or real[x]["case"] not in NOT_JUNCTION)]
                 if not common:
                     continue
                 same = lambda k: sum(real[x][k] == got[x][k] for x in common)
-                lines.append("## %s map, true controls, %s scenes: %d" % (mode, where, len(common)))
+                lines.append("## %s, %s scenes: %d" % (MODE_TITLE[mode], where, len(common)))
                 for k in ("case", "holder", "sdc_control", "ooi_control", "sdc_turn", "ooi_turn"):
                     lines.append("- %s unchanged: %.1f%%" % (k, 100.0 * same(k) / len(common)))
                 for k in ("sdc_violation", "ooi_violation", "sdc_aggressive_candidate", "ooi_aggressive_candidate"):
@@ -614,7 +639,10 @@ def main():
         p.add_argument("--part")
         p.add_argument("--profile", default="us-california")
         p.add_argument("--only", help="a file of scene names: only these")
-        p.add_argument("--modes", default="rebuilt,no_links", help="screen: comma list of rebuilt, rebuilt_geo, no_links")
+        p.add_argument("--modes", default="rebuilt,no_links",
+                       help="screen: comma list of rebuilt, rebuilt_geo, no_links (true controls), rebuilt_none, "
+                            "no_links_none (no controls)")
+        p.add_argument("--pool", help="pool.py folder: rebuild from the tracks of other scenes at the same place too")
     r = sub.add_parser("report")
     r.add_argument("--real", help="screen_crossing.csv on the full map")
     r.add_argument("--score")
